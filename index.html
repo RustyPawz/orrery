@@ -66,6 +66,8 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 .pop{position:absolute;top:10px;z-index:6;width:min(300px,calc(100vw - 32px));background:rgba(18,11,32,.97);border:1px solid var(--line);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:6px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
 .pop[hidden]{display:none}
 .pop button{border-radius:8px;text-align:left;padding:7px 10px}
+.pop small{color:var(--muted);font-size:10.5px}
+.pop button b{font-weight:500}
 .pop button.danger{color:#ff8fa3}
 .pop p{margin:4px 0 0;color:var(--muted);font-size:10.5px;line-height:1.5}
 .pop .row{display:grid;grid-template-columns:1fr 1fr;gap:6px}
@@ -117,7 +119,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
     <button id="midiBtn" type="button" aria-expanded="false" aria-controls="midiPanel">MIDI</button>
     <button id="rackBtn" type="button" aria-expanded="true" aria-controls="rack">Rack</button>
     <button id="secBtn" type="button" aria-pressed="false" title="Draw a labelled circle around part of the patch">◯ Section</button>
-    <button id="demo" type="button" title="Adds the Crypt demo as a new song">Load demo</button>
+    <button id="demo" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="demoMenu">Load demo</button>
     <button id="clear" type="button">Clear</button>
   </div>
 </header>
@@ -137,6 +139,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
     <button type="button" data-act="del" class="danger">Delete song</button>
     <p>Songs save automatically in this browser. Export a file to move a song to another computer; imported audio travels inside it.</p>
   </div>
+  <div class="pop" id="demoMenu" hidden></div>
   <div class="pop midi" id="midiPanel" hidden>
     <p class="st" id="midiStatus">Not connected.</p>
     <div class="row"><button type="button" id="midiConnect">Connect MIDI</button><button type="button" id="midiLearn" aria-pressed="false">Learn</button></div>
@@ -655,7 +658,7 @@ function sched(){
   for(const n of nodes){const T=TYPES[n.type];if(!T.clocks)continue;
     for(const[port,beats,sw]of T.clocks(n)){
       const int=spb*beats,key='nx_'+port;let nx=n.st[key];
-      if(nx==null||nx>now+2||nx<now-1)nx=t0+Math.ceil((now+.02-t0)/int-1e-6)*int;
+      if(nx==null||nx>now+int+.5||nx<now-1)nx=t0+Math.ceil((now+.02-t0)/int-1e-6)*int;
       while(nx<now+.12){const k=Math.round((nx-t0)/int);let t=nx;if(sw&&k%2===1)t+=(n.p.swing||0)*int*.5;
         if(port[0]==='_')T.tick(n,t);else{n.fires.push(t);emit(n,port,{t,deg:0,vel:n.p.vel??(k%4===0?.95:.8)},0)}nx+=int}
       n.st[key]=nx;
@@ -780,6 +783,159 @@ function demo(){
   sec(380,1025,200,'Choir swell',1);sec(1855,425,195,'Mixer',6);sec(860,1025,200,'Pressure + tides',2);
   rewire();
 }
+
+/* ---------- more demos ---------- */
+function freshPatch(b,sc,r){nodes.forEach(killAu);nodes=[];wires=[];pulses=[];sections=[];secSel=null;uid=1;sel=null;midiMap=[];bpm=b;scaleName=sc;root=r}
+const SY=(base,o)=>({...SYNTH_PRESETS[base],...o});
+const secAdd=(x,y,r,name,c)=>sections.push({id:uid++,x,y,r,name,c});
+
+function demoMonolith(){
+  // "Monolith": a slow cinematic drone in D minor at 60 bpm
+  freshPatch(60,'Minor',2);const S=.85;
+  const clk=mk('clock',40,590,{bpm:60});
+  mk('key',40,350,{walk:0},{sz:S});
+  const dv=mk('divider',40,830,{},{sz:S});
+  // glass rain: sparse chimes echoed upward into a long delay
+  const eu=mk('euclid',285,80,{hits:2,steps:13,rot:0},{sz:S});
+  const rp=mk('repeater',475,80,{count:5,space:6,decay:.7,climb:2});
+  const gl=mk('sampler',285,245,{mode:1,rootNote:69,oct:1,level:.32,release:2,attack:.01},{sid:'builtin:glass'});
+  const dl=mk('fx_delay',475,245,{time:6,fb:.7,tone:.3,mix:.45});
+  // strings of light: wide open chords that take seconds to bloom
+  const ch=mk('chord',765,80,{type:6,inv:0,strum:.35,prog:6,mode:0});
+  const pad=mk('synth',955,80,SY('Pad',{detune:40,cutoff:.24,reso:3,fenv:.15,attack:4,hold:5,release:8,level:.22}),{label:'Strings'});
+  const cho=mk('fx_chorus',765,245,{rate:.1,depth:.9,mix:.7});
+  const ap=mk('fx_autopan',955,245,{rate:.05,depth:.7,mix:1});
+  // the hall
+  const rv=mk('fx_reverb',1245,80,{size:8,damp:.5,pre:.08,mix:.6},{sz:1.15});
+  const out=mk('output',1435,80,{level:1},{label:'Air'});
+  // low end: a sub drone breathing through a slow filter
+  const sub=mk('synth',285,510,SY('Bass',{wave:0,detune:0,fm:.1,ratio:0,cutoff:.4,reso:1,fenv:0,attack:3,hold:6,release:6,oct:-2,level:.5}),{label:'Sub'});
+  const flt=mk('fx_filter',475,510,{type:0,cutoff:.3,reso:2,depth:.4,rate:.03,mix:1});
+  const lf=mk('lfo',380,675,{shape:0,sync:1,amp:1},{sz:S});
+  // braam: the trailer horn, sometimes, with a timpani boom under it
+  const cc=mk('chance',765,510,{prob:.45},{sz:S});
+  const br=mk('synth',955,510,SY('Bass',{wave:2,detune:22,cutoff:.14,reso:5,fenv:.75,attack:.25,hold:1.8,release:3.5,oct:-1,level:.45}),{label:'Braam'});
+  const dr=mk('fx_drive',765,675,{amount:.45,tone:.35,level:.7,mix:.7});
+  const tm=mk('drum',955,675,{pack:2,inst:0,tune:-8,decay:3,tone:0,level:.8},{label:'Timpani'});
+  // clockwork: a quiet ticking that keeps the tension
+  const ek=mk('euclid',1245,510,{hits:3,steps:8,rot:0},{sz:S});
+  const tk=mk('drum',1435,510,{pack:1,inst:0,tone:.3,level:.18});
+  const tdl=mk('fx_delay',1340,675,{time:1,fb:.35,tone:.5,mix:.4});
+  // swell: one dial to lift the whole score, plus slow drifts
+  const mc=mk('macro',285,940,{value:.4},{sz:1.15,label:'Swell'});
+  const dft=mk('lfo',475,940,{shape:4,rate:.05,amp:1},{sz:S});
+  const rn=mk('random',380,1105,{rate:7,slew:1.5,amp:1},{sz:S});
+  link(clk,'x1',eu,'clk');link(eu,'out',rp,'in');link(rp,'out',gl,'in');link(gl,'out',dl,'in');link(dl,'out',rv,'in');
+  link(clk,'d8',ch,'in');link(clk,'d8',dv,'clk');link(dv,'d2',ch,'adv');
+  link(ch,'out',pad,'in');link(pad,'out',cho,'in');link(cho,'out',ap,'in');link(ap,'out',rv,'in');
+  link(ch,'root',sub,'in');link(sub,'out',flt,'in');
+  link(clk,'d8',cc,'in');link(cc,'a',br,'in');link(cc,'a',tm,'in');link(br,'out',dr,'in');link(dr,'out',rv,'in');link(tm,'out',rv,'in');
+  link(clk,'x2',ek,'clk');link(ek,'out',tk,'in');link(tk,'out',tdl,'in');link(tdl,'out',rv,'in');
+  link(rv,'out',out,'in');
+  linkCV(lf,'out',pad,'cutoff',.2);linkCV(dft,'out',pad,'semi',.02);linkCV(rn,'out',dl,'fb',.2);
+  linkCV(mc,'out',rv,'mix',.3);linkCV(mc,'out',pad,'level',.4);linkCV(mc,'out',br,'cutoff',.2);
+  linkCV(br,'env',pad,'level',-.4);
+  secAdd(380,165,200,'Glass rain',1);secAdd(860,165,200,'Strings of light',4);secAdd(1340,165,200,'Cathedral',6);
+  secAdd(380,595,200,'Low end',5);secAdd(860,595,200,'Braam',3);secAdd(1340,595,200,'Clockwork',0);secAdd(380,1025,200,'Swell',2);
+  rewire();
+}
+
+function demoCartridge(){
+  // "Cartridge": a bright chiptune loop in C major at 150 bpm
+  freshPatch(150,'Major',0);const S=.85;
+  const chip={wave:3,detune:0,fm:0,ratio:1,ftype:0,cutoff:.95,reso:1,fenv:0,attack:.001,hold:.06,release:.05,sweep:0,oct:1,semi:0,level:.32};
+  const clk=mk('clock',40,590,{bpm:150});
+  const key=mk('key',40,350,{walk:1},{sz:S});
+  const kdv=mk('divider',40,830,{},{sz:S});
+  // melody: a square-wave hook that shifts each bar
+  const mq=mk('sequencer',285,80,{len:16,dir:0,prob:1},{steps:[0,2,4,7,4,2,-1,0,5,4,2,0,-1,2,4,-1],sz:S});
+  const lead=mk('synth',475,80,chip,{label:'Square lead'});
+  const vib=mk('lfo',285,245,{shape:0,rate:6,amp:1,sync:0},{sz:S,label:'Vibrato'});
+  const lcr=mk('fx_crusher',475,245,{bits:5,tone:.85,mix:.6});
+  const rn=mk('random',380,330,{rate:5,slew:0,amp:1},{sz:.8});
+  // arp: chords played as fast arpeggios, I V vi IV
+  const ac=mk('chord',765,80,{type:0,inv:0,strum:0,prog:1,mode:1});
+  const arp=mk('synth',955,80,{...chip,oct:2,hold:.02,release:.03,level:.18},{label:'Arp'});
+  const adl=mk('fx_delay',765,245,{time:2,fb:.3,tone:.6,mix:.25});
+  // bass: triangle on the chord root, in eighths
+  const dv=mk('divider',285,510,{},{sz:S});
+  const bass=mk('synth',475,510,{...chip,wave:1,cutoff:.9,hold:.1,release:.06,oct:-1,level:.5},{label:'Triangle bass'});
+  // drums: clicky noise kit, crushed to 4 bits
+  const kick=mk('drum',745,500,{pack:0,inst:0,tune:5,decay:.45,tone:.9,level:.8});
+  const sn=mk('drum',975,500,{pack:0,inst:1,tune:3,decay:.7,tone:.95,level:.5});
+  const eh=mk('euclid',860,595,{hits:6,steps:8,rot:0},{sz:.8});
+  const es=mk('euclid',745,690,{hits:1,steps:2,rot:1},{sz:S});
+  const hat=mk('drum',975,690,{pack:0,inst:3,tone:.9,decay:.5,level:.3});
+  // console
+  const dcr=mk('fx_crusher',1240,290,{bits:4,tone:.7,mix:1});
+  const chD=mk('output',1440,290,{level:.9},{label:'Drums ch'});
+  const chL=mk('output',1240,460,{level:.85},{label:'Lead ch'});
+  const chA=mk('output',1440,460,{level:.8,pan:.25},{label:'Arp ch'});
+  link(clk,'x2',mq,'clk');link(mq,'out',lead,'in');link(lead,'out',lcr,'in');link(lcr,'out',chL,'in');
+  link(clk,'x4',ac,'in');link(clk,'d4',ac,'adv');link(ac,'out',arp,'in');link(arp,'out',adl,'in');link(adl,'out',chA,'in');
+  link(ac,'root',dv,'clk');link(dv,'d2',bass,'in');
+  link(clk,'x1',kick,'in');link(clk,'x1',es,'clk');link(es,'out',sn,'in');link(clk,'x4',eh,'clk');link(eh,'out',hat,'in');
+  link(kick,'out',dcr,'in');link(sn,'out',dcr,'in');link(hat,'out',dcr,'in');link(dcr,'out',chD,'in');
+  link(clk,'d8',kdv,'clk');link(kdv,'d4',key,'next');
+  linkCV(vib,'out',lead,'semi',.015);linkCV(rn,'out',mq,'rot',.15);
+  secAdd(380,165,220,'Melody',0);secAdd(860,165,200,'Arp',1);secAdd(380,595,200,'Bass',5);secAdd(860,595,235,'Drums',3);secAdd(1340,375,215,'Console',6);
+  rewire();
+}
+
+function demoXenoflora(){
+  // "Xenoflora": an alien soundscape in F# whole tone at 72 bpm
+  freshPatch(72,'Whole tone',6);const S=.85;
+  const clk=mk('clock',40,590,{bpm:72});
+  mk('key',40,350,{walk:0},{sz:S});
+  // creatures: triplet chirps that wander and hide
+  const pu=mk('pulsar',285,80,{rate:5,vel:.7},{sz:S});
+  const wk=mk('walker',475,80,{range:3},{sz:S});
+  const cc=mk('chance',285,245,{prob:.35},{sz:S});
+  const cr=mk('drum',475,245,{pack:1,inst:1,tune:0,decay:1.2,level:.35});
+  // radio ghosts: a tape break sliced and scattered, slowed and smeared
+  const eb=mk('euclid',765,80,{hits:5,steps:13,rot:0},{sz:S});
+  const sp=mk('sampler',955,80,{mode:3,slices:2,tune:-7,level:.3,release:.1},{sid:'builtin:break',label:'Radio ghosts'});
+  const wk2=mk('walker',765,245,{range:4},{sz:S});
+  const fl=mk('fx_flanger',955,245,{rate:.05,depth:1,fb:.8,mix:.8});
+  // signal: ring-modulated zaps, now and then
+  const zap=mk('synth',1245,80,SY('Zap',{oct:0,attack:.01,release:.4,sweep:30,level:.25}));
+  const rm=mk('fx_ringmod',1435,80,{freq:220,mix:.7});
+  const phz=mk('fx_phaser',1245,245,{rate:.07,depth:.9,fb:.6,mix:.6});
+  const zc=mk('chance',1435,245,{prob:.3},{sz:S});
+  // wind: resonant noise that never quite settles
+  const wnd=mk('synth',285,510,{wave:4,detune:0,fm:0,ratio:1,ftype:1,cutoff:.45,reso:14,fenv:.1,attack:3,hold:4,release:6,sweep:0,oct:0,semi:0,level:.3},{label:'Wind'});
+  const wf=mk('fx_filter',475,510,{type:1,cutoff:.5,reso:8,depth:.6,rate:.07,mix:1});
+  const lfw=mk('lfo',380,675,{shape:4,rate:.08,amp:1},{sz:S});
+  // atmosphere: the creatures' voices excite the air
+  const rv=mk('fx_reverb',765,510,{size:7,damp:.4,pre:.1,mix:.55},{sz:1.15});
+  const fol=mk('follower',955,510,{gain:5,smooth:.4});
+  const dly=mk('fx_delay',765,675,{time:5,fb:.6,tone:.4,mix:.4});
+  const out=mk('output',955,675,{level:1},{label:'World'});
+  // drops
+  const ed=mk('euclid',285,940,{hits:3,steps:7,rot:0},{sz:S});
+  const dp=mk('drum',475,940,{pack:1,inst:5,tune:-5,decay:1.5,level:.35});
+  // mutations
+  const rn=mk('random',765,940,{rate:4,slew:.4,amp:1},{sz:S});
+  const mc=mk('macro',955,940,{value:.3},{sz:1.15,label:'Strangeness'});
+  link(pu,'out',wk,'in');link(wk,'out',cc,'in');link(cc,'a',cr,'in');link(cr,'out',fol,'in');link(fol,'out',rv,'in');
+  link(clk,'x2',eb,'clk');link(eb,'out',wk2,'in');link(wk2,'out',sp,'in');link(sp,'out',fl,'in');link(fl,'out',rv,'in');
+  link(clk,'d2',zc,'in');link(zc,'a',zap,'in');link(zap,'out',rm,'in');link(rm,'out',phz,'in');link(phz,'out',rv,'in');
+  link(clk,'d8',wnd,'in');link(wnd,'out',wf,'in');link(wf,'out',rv,'in');
+  link(clk,'x2',ed,'clk');link(ed,'out',dp,'in');link(dp,'out',dly,'in');link(dly,'out',rv,'in');
+  link(rv,'out',out,'in');
+  linkCV(lfw,'out',wnd,'cutoff',.25);linkCV(fol,'cv',wnd,'cutoff',.3);linkCV(fol,'cv',rm,'freq',.3);
+  linkCV(rn,'out',cr,'tune',.4);linkCV(rn,'out',rm,'freq',.4);linkCV(rn,'out',sp,'tune',.1);
+  linkCV(mc,'out',fl,'fb',.3);linkCV(mc,'out',rv,'mix',.3);linkCV(mc,'out',zap,'fm',.4);
+  secAdd(380,165,200,'Creatures',2);secAdd(860,165,200,'Radio ghosts',4);secAdd(1340,165,200,'Signal',5);
+  secAdd(380,595,200,'Wind',1);secAdd(860,595,200,'Atmosphere',6);secAdd(380,1025,160,'Drops',0);secAdd(860,1025,160,'Mutations',3);
+  rewire();
+}
+const DEMOS=[
+  {name:'Crypt',what:'hypnotic goth techno · 126 bpm',fn:()=>demo()},
+  {name:'Monolith',what:'cinematic synth drone · 60 bpm',fn:demoMonolith},
+  {name:'Cartridge',what:'chiptune · 150 bpm',fn:demoCartridge},
+  {name:'Xenoflora',what:'alien soundscape · 72 bpm',fn:demoXenoflora},
+];
 
 /* ---------- geometry ---------- */
 const cv=document.getElementById('cv'),g=cv.getContext('2d');
@@ -1227,7 +1383,11 @@ section('FX',Object.keys(FX).map(k=>item(FX[k].name,FAM[FX[k].fam],()=>addNode('
 section('MIDI',basic(['midiin']),'Play the patch from a keyboard: notes come out quantized to the current key. Use the MIDI button in the header to connect and map knobs.');
 section('Out',[item('Speakers / channel',COL.white,()=>addNode('output'))],'Add one per element to mix: level, pan, M for mute, S for solo. Double-tap any module to name it. Unwired audio goes straight out and is silenced while anything is soloed.');
 rackBtn.onclick=()=>{rackEl.hidden=!rackEl.hidden;rackBtn.setAttribute('aria-expanded',String(!rackEl.hidden))};
-document.getElementById('demo').onclick=()=>{flushSave();const id=addSong('Crypt (demo)',null);lib.cur=id;demo();lib.songs[id].data=serialize();lib.cur=null;openSong(id)};
+const demoBtn=document.getElementById('demo'),demoMenu=document.getElementById('demoMenu');
+DEMOS.forEach(D=>{const b=document.createElement('button');b.type='button';b.innerHTML='<b></b><br><small></small>';b.querySelector('b').textContent=D.name;b.querySelector('small').textContent=D.what;
+  b.onclick=()=>{closePops();flushSave();const id=addSong(D.name+' (demo)',null);lib.cur=id;D.fn();lib.songs[id].data=serialize();lib.cur=null;openSong(id)};demoMenu.appendChild(b)});
+{const p=document.createElement('p');p.textContent='Each demo opens as a new song, so nothing you have is replaced.';demoMenu.appendChild(p)}
+demoBtn.onclick=e=>{e.stopPropagation();const open=demoMenu.hidden;closePops();if(open){demoMenu.hidden=false;demoBtn.setAttribute('aria-expanded','true');placePop(demoMenu,demoBtn)}};
 const clearBtn=document.getElementById('clear');let clearArm=0;
 clearBtn.onclick=()=>{if(Date.now()-clearArm<3000){nodes.forEach(killAu);nodes=[];wires=[];sections=[];secSel=null;sel=null;save();clearBtn.textContent='Clear';clearArm=0}else{clearArm=Date.now();clearBtn.textContent='Tap again to clear';setTimeout(()=>{clearBtn.textContent='Clear'},3000)}};
 
@@ -1236,9 +1396,9 @@ const songSel=document.getElementById('song'),songName=document.getElementById('
 function refreshSongs(){songSel.innerHTML='';Object.entries(lib.songs).sort((a,b)=>a[1].name.localeCompare(b[1].name)).forEach(([id,x])=>songSel.add(new Option(x.name,id)));songSel.value=lib.cur}
 songSel.onchange=()=>openSong(songSel.value);
 function placePop(el,btn){const st=stage.getBoundingClientRect(),b=btn.getBoundingClientRect();el.style.left=Math.max(12,Math.min(b.left-st.left,st.width-el.offsetWidth-12))+'px'}
-function closePops(){songMenu.hidden=true;songMenuBtn.setAttribute('aria-expanded','false');midiPanel.hidden=true;midiBtn.setAttribute('aria-expanded','false');midiBtn.classList.toggle('on',midiLearn)}
+function closePops(){demoMenu.hidden=true;demoBtn.setAttribute('aria-expanded','false');songMenu.hidden=true;songMenuBtn.setAttribute('aria-expanded','false');midiPanel.hidden=true;midiBtn.setAttribute('aria-expanded','false');midiBtn.classList.toggle('on',midiLearn)}
 songMenuBtn.onclick=e=>{e.stopPropagation();const open=songMenu.hidden;closePops();if(open){songMenu.hidden=false;songMenuBtn.setAttribute('aria-expanded','true');placePop(songMenu,songMenuBtn)}};
-document.addEventListener('pointerdown',e=>{if(!e.target.closest('.pop,#songMenuBtn,#midiBtn'))closePops()});
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('.pop,#songMenuBtn,#midiBtn,#demo'))closePops()});
 function renameSong(){songSel.hidden=true;songName.hidden=false;songName.value=lib.songs[lib.cur].name;songName.focus();songName.select()}
 function endRename(commit){if(songName.hidden)return;const v=songName.value.trim();if(commit&&v&&v!==lib.songs[lib.cur].name){lib.songs[lib.cur].name=uniqueName(v);writeLib()}songName.hidden=true;songSel.hidden=false;refreshSongs()}
 songName.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Enter')endRename(true);if(e.key==='Escape')endRename(false)});

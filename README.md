@@ -22,6 +22,10 @@ It's a companion to the [RedtailWorks FM-1 firmwares](https://rustypawz.github.i
 - **Mixer:** as many Speakers channel strips as you like, each with level, pan, mute and solo.
 - **MIDI:** map any dial, mute, solo or Play to a knob, fader or key on your controller with MIDI learn, and play the patch from a keyboard through a MIDI In module.
 
+## Demos
+
+**Load demo** adds any of these as a new song: **Crypt** (hypnotic goth techno), **Monolith** (a cinematic synth drone), **Cartridge** (chiptune) and **Xenoflora** (an alien soundscape). Each is grouped into labelled sections, so you can see what every part does.
+
 ## Songs
 
 Patches are saved as songs in your browser, as many as you like, and you swap between them from the song menu in the header. The open song saves itself as you work. Use **Export song file** to move a song to another computer; any audio you imported travels inside the file.
