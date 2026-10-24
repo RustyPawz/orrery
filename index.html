@@ -96,7 +96,7 @@ h2::before{content:"";width:34px;height:3px;border-radius:2px;background:linear-
 .player{display:flex;align-items:center;gap:12px}
 .player button{flex:none;width:42px;height:42px;border-radius:50%;border:1px solid var(--c,var(--lime));background:transparent;color:var(--c,var(--lime));cursor:pointer;display:grid;place-items:center}
 .player button[aria-pressed="true"]{background:var(--c,var(--lime));color:#14200a}
-.player button svg{width:16px;height:16px}
+.player button svg{width:16px;height:16px;pointer-events:none}
 .player .bar{flex:1;height:6px;border-radius:3px;background:var(--panel-2);position:relative;cursor:pointer}
 .player .bar i{position:absolute;inset:0 auto 0 0;width:0;border-radius:3px;background:var(--c,var(--lime))}
 .player time{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:74px;text-align:right}
@@ -203,9 +203,9 @@ footer a{color:var(--fg)}
       <p class="fine">Free · no account · runs in your browser · best in Chrome or Edge, which also support MIDI controllers</p>
     </div>
     <figure class="shot" style="margin:0">
-      <img src="assets/renders/crypt.webp" width="1600" height="1000" alt="The Crypt demo patch in Orrery: circular modules joined by glowing wires, grouped into labelled sections.">
-      <div class="listen player" data-src="assets/audio/crypt.m4a" style="--c:var(--lime)">
-        <button type="button" aria-pressed="false" aria-label="Play the Crypt demo"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 4v16l13-8z"/></svg></button>
+      <img src="assets/renders/monolith.webp" width="1600" height="1000" alt="The Monolith demo patch in Orrery: circular modules joined by glowing wires, grouped into labelled sections.">
+      <div class="listen player" data-src="assets/audio/monolith.m4a" style="--c:var(--lime)">
+        <button type="button" aria-pressed="false" aria-label="Play the Monolith demo"><svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 4v16l13-8z"/></svg></button>
       </div>
     </figure>
   </div>
@@ -348,21 +348,27 @@ ddBtn.addEventListener('click', e => { e.stopPropagation(); setDD(!dd.classList.
 document.addEventListener('click', e => { if (!dd.contains(e.target)) setDD(false); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { setDD(false); ddBtn.focus(); } });
 
-// audio players: one plays at a time; the bar seeks
+// audio players: one plays at a time; the bar seeks. Players of the same recording (the hero and its card)
+// share one audio element, so both buttons and the bar always agree.
 const PLAY = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 4v16l13-8z"/></svg>';
 const PAUSE = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>';
 const fmt = s => isFinite(s) ? Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0') : '0:00';
+const tracks = new Map();
+const track = src => { if (!tracks.has(src)) { const a = new Audio(); a.preload = 'none'; a.src = src; tracks.set(src, a); } return tracks.get(src); };
 const players = [...document.querySelectorAll('.player')].map(el => {
-  const audio = new Audio(), btn = el.querySelector('button'), bar = el.querySelector('.bar'), fill = bar && bar.querySelector('i'), time = el.querySelector('time');
-  audio.preload = 'none'; audio.src = el.dataset.src;
+  const audio = track(el.dataset.src), btn = el.querySelector('button'), bar = el.querySelector('.bar'), fill = bar && bar.querySelector('i'), time = el.querySelector('time');
+  // the icon is only swapped when play/pause changes: replacing it mid-click (it used to happen on every
+  // timeupdate) made the browser drop the click, so a playing track often couldn't be paused
+  let shown = null;
   const show = () => {
-    const on = !audio.paused; btn.setAttribute('aria-pressed', String(on)); btn.innerHTML = on ? PAUSE : PLAY;
+    const on = !audio.paused;
+    if (on !== shown) { shown = on; btn.setAttribute('aria-pressed', String(on)); btn.innerHTML = on ? PAUSE : PLAY; }
     if (fill) { const f = audio.duration ? audio.currentTime / audio.duration : 0; fill.style.width = (f * 100) + '%'; bar.setAttribute('aria-valuenow', String(Math.round(f * 100))); }
     if (time) time.textContent = fmt(audio.currentTime) + ' / ' + fmt(audio.duration);
   };
   ['play', 'pause', 'timeupdate', 'loadedmetadata', 'ended'].forEach(ev => audio.addEventListener(ev, show));
   btn.addEventListener('click', () => {
-    if (audio.paused) { players.forEach(p => p.audio !== audio && p.audio.pause()); audio.play(); } else audio.pause();
+    if (audio.paused) { tracks.forEach(a => a !== audio && a.pause()); audio.play(); } else audio.pause();
   });
   if (bar) {
     const seek = x => { if (audio.duration) audio.currentTime = Math.max(0, Math.min(1, x)) * audio.duration; };
