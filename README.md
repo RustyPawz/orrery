@@ -2,7 +2,9 @@
 
 ![Orrery running the Crypt demo patch](preview.png)
 
-**Play it: <https://rustypawz.github.io/orrery/>**, or install the desktop app (see [Desktop app](#desktop-app)).
+**Play it: <https://rustypawz.github.io/orrery/play/>** · website: <https://rustypawz.github.io/orrery/> · or build the desktop app (see [Desktop app](#desktop-app)).
+
+The repository holds the website ([`index.html`](index.html), with renders and demo recordings in [`assets/`](assets)) and the app itself ([`play/index.html`](play/index.html)), which is also what the desktop app loads.
 
 Orrery is a generative modular music studio that runs in your browser or as a desktop app. You drop modules onto a canvas, wire them together, and the patch plays itself: clocks fire pulses, sequencers and chord modules pick notes, synths, drums and samplers sound them, and modulation keeps reshaping everything over time. Every event travels visibly down its wire, so you can watch why each note happened.
 

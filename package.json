@@ -20,7 +20,7 @@
     "appId": "works.redtail.orrery",
     "productName": "Orrery",
     "files": [
-      "index.html",
+      "play/index.html",
       "desktop/main.js",
       "desktop/preload.js",
       "desktop/icon.png",

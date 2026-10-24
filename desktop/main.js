@@ -1,4 +1,4 @@
-// Orrery desktop: the same index.html as the website, in its own window, with a plugins folder it watches.
+// Orrery desktop: the same play/index.html as the website, in its own window, with a plugins folder it watches.
 const { app, BrowserWindow, ipcMain, shell, Menu, session, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -169,7 +169,7 @@ function createWindow() {
   for (const ev of ['blur', 'minimize', 'hide']) win.on(ev, () => setTimeout(optOutOfThrottling, 150));
   // links like "by RedtailWorks" open in the real browser, not in an Orrery window
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
-  win.loadFile(path.join(__dirname, '..', 'index.html'));
+  win.loadFile(path.join(__dirname, '..', 'play', 'index.html'));
 }
 
 function buildMenu() {
