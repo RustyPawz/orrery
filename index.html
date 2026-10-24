@@ -243,11 +243,19 @@ async function restartAudio(){
   if(!ctx)return;const was=playing;nodes.forEach(killAu);wires.forEach(w=>{w.g=null});try{await ctx.close()}catch(e){}ctx=null;initAudio();
   if(was){await ctx.resume();t0=ctx.currentTime+.05;nodes.forEach(n=>{n.st={}})}else await ctx.suspend();
 }
-// audio load: Chromium reports how busy the audio thread is; warn before it starts dropping out
-let audioLoad=null,loadWarnT=0;
-function watchLoad(){const rc=ctx.renderCapacity;if(!rc||!rc.start)return;
-  try{rc.addEventListener('update',e=>{audioLoad={avg:e.averageLoad,peak:e.peakLoad,under:e.underrunRatio};
-    if(playing&&(e.underrunRatio>.01||e.averageLoad>.9)&&performance.now()-loadWarnT>30000){loadWarnT=performance.now();flashMsg('Audio is overloaded. In Settings, try the Stable engine, Eco effects or fewer notes per instrument.')}});rc.start({updateInterval:1})}catch(e){}}
+// audio health: where the browser counts real dropouts (playbackStats) or reports audio-thread load (renderCapacity), use it to warn
+let audioLoad=null,loadWarnT=0,dropWatch=null;
+const overloadWarn=()=>{if(playing&&performance.now()-loadWarnT>30000){loadWarnT=performance.now();flashMsg('Audio is dropping out. In Settings, try the Stable engine, Eco effects or fewer notes per instrument.')}};
+function watchLoad(){
+  const rc=ctx.renderCapacity;
+  if(rc&&rc.start)try{rc.addEventListener('update',e=>{audioLoad={...audioLoad,avg:e.averageLoad,peak:e.peakLoad,under:e.underrunRatio};if(e.underrunRatio>.01||e.averageLoad>.9)overloadWarn()});rc.start({updateInterval:1})}catch(e){}
+  clearInterval(dropWatch);if(!('playbackStats' in ctx))return;
+  // dropouts per minute over the last few seconds; a few in a row means the audio thread can't keep up
+  let last=null;const c=ctx;
+  dropWatch=setInterval(()=>{if(c!==ctx){clearInterval(dropWatch);return}let s;try{s=c.playbackStats}catch(e){return}
+    if(last&&playing){const n=s.underrunEvents-last.n,secs=Math.max(.1,s.totalDuration-last.t);audioLoad={...audioLoad,drops:n*60/secs};if(n>=3)overloadWarn()}
+    last={n:s.underrunEvents,t:s.totalDuration}},2000);
+}
 // notes per instrument: past the cap, a new note is skipped rather than overloading the audio thread
 function voiceOk(n,end){const L2=(n.st.vl||(n.st.vl=[])),tn=ctx.currentTime;for(let i=L2.length-1;i>=0;i--)if(L2[i]<tn)L2.splice(i,1);if(L2.length>=setv.voices)return false;L2.push(end);return true}
 const eco=()=>setv.fx==='eco',overs=q=>eco()?'none':q;
@@ -1896,6 +1904,7 @@ playBtn.onclick=async()=>{
   if(!ctx)initAudio();
   if(!playing){await ctx.resume();t0=ctx.currentTime+.05;nodes.forEach(n=>{n.st={}});playing=true;playBtn.textContent='Stop';playBtn.classList.add('on')}
   else{playing=false;await ctx.suspend();playBtn.textContent='Play';playBtn.classList.remove('on')}
+  window.orreryDesktop?.setPlaying?.(playing);// the desktop app keeps the computer awake while music plays
 };
 bpmIn.onchange=()=>{setBpm(+bpmIn.value||104);save()};
 scaleSel.onchange=()=>{setKey(scaleSel.value,root);save()};
@@ -1967,7 +1976,8 @@ renderSettings();
 // the panel's audio line: buffer latency and, where the browser reports it, how busy the audio thread is
 setInterval(()=>{if(setPanel.hidden)return;if(!ctx){audStat.textContent='Audio starts when you press Play.';return}
   const lat=Math.round(((ctx.baseLatency||0)+(ctx.outputLatency||0))*1000);
-  audStat.textContent=`Latency ~${lat} ms · ${ctx.sampleRate/1000} kHz`+(audioLoad?` · load ${Math.round(audioLoad.avg*100)}% (peak ${Math.round(audioLoad.peak*100)}%)`+(audioLoad.under>0?` · ${Math.round(audioLoad.under*100)}% dropouts`:''):'')},500);
+  const A=audioLoad||{};
+  audStat.textContent=`Latency ~${lat} ms · ${ctx.sampleRate/1000} kHz`+(A.avg!=null?` · load ${Math.round(A.avg*100)}% (peak ${Math.round(A.peak*100)}%)`:'')+(A.drops!=null?` · ${A.drops<.5?'no dropouts':Math.round(A.drops)+' dropouts/min'}`:'')},500);
 setBtn.onclick=e=>{e.stopPropagation();const open=setPanel.hidden;closePops();if(open){setPanel.hidden=false;setBtn.setAttribute('aria-expanded','true');placePop(setPanel,setBtn)}};
 document.getElementById('setLow').onclick=()=>{setv={...SET_LOW};applySettings()};
 document.getElementById('setDef').onclick=()=>{setv={...SET_DEF};applySettings()};

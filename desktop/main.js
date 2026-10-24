@@ -1,5 +1,5 @@
 // Orrery desktop: the same index.html as the website, in its own window, with a plugins folder it watches.
-const { app, BrowserWindow, ipcMain, shell, Menu, session } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -9,6 +9,46 @@ app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
 if (!app.requestSingleInstanceLock()) app.quit();
+
+// Windows slows down apps you aren't looking at (EcoQoS: power-saving cores, capped clocks, coarse timers).
+// Audio is made a few milliseconds ahead, so that turns into crackles; every Orrery process opts out, the way audio software does.
+let winApi = null;
+if (process.platform === 'win32') {
+  try {
+    const koffi = require('koffi');
+    const k32 = koffi.load('kernel32.dll');
+    const PPT = koffi.struct('PROCESS_POWER_THROTTLING_STATE', { Version: 'uint32_t', ControlMask: 'uint32_t', StateMask: 'uint32_t' });
+    winApi = {
+      size: koffi.sizeof(PPT),
+      OpenProcess: k32.func('void * __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)'),
+      CloseHandle: k32.func('int __stdcall CloseHandle(void *h)'),
+      SetProcessInformation: k32.func('int __stdcall SetProcessInformation(void *h, int cls, _In_ PROCESS_POWER_THROTTLING_STATE *info, uint32_t size)'),
+      SetPriorityClass: k32.func('int __stdcall SetPriorityClass(void *h, uint32_t cls)'),
+    };
+  } catch (e) { winApi = null; /* without it Orrery still runs; it just may crackle in the background */ }
+}
+function keepAwake(pid) {
+  const h = winApi.OpenProcess(0x0200, 0, pid); // PROCESS_SET_INFORMATION
+  if (!h) return;
+  try {
+    // ProcessPowerThrottling: take control of execution speed (0x1) and timer resolution (0x4), and turn both throttles off
+    winApi.SetProcessInformation(h, 4, { Version: 1, ControlMask: 0x1 | 0x4, StateMask: 0 }, winApi.size);
+    winApi.SetPriorityClass(h, 0x8000); // above normal, so the audio keeps up when other apps are busy
+  } finally { winApi.CloseHandle(h); }
+}
+// Chromium starts processes as it needs them (renderer, audio service, GPU) and may re-throttle a backgrounded one,
+// so this runs on a short timer and whenever the window goes to the background
+function optOutOfThrottling() {
+  if (!winApi) return;
+  for (const m of app.getAppMetrics()) { try { keepAwake(m.pid); } catch (e) { /* a process that just exited */ } }
+}
+
+// while music plays, the computer must not go to sleep (the screen still can)
+let sleepBlock = null;
+function setPlaying(on) {
+  if (on && sleepBlock === null) sleepBlock = powerSaveBlocker.start('prevent-app-suspension');
+  else if (!on && sleepBlock !== null) { powerSaveBlocker.stop(sleepBlock); sleepBlock = null; }
+}
 
 let win = null;
 let pluginsDir = '';
@@ -126,6 +166,7 @@ function createWindow() {
   if (b.maximized) win.maximize();
   win.once('ready-to-show', () => win.show());
   win.on('close', saveBounds);
+  for (const ev of ['blur', 'minimize', 'hide']) win.on(ev, () => setTimeout(optOutOfThrottling, 150));
   // links like "by RedtailWorks" open in the real browser, not in an Orrery window
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
   win.loadFile(path.join(__dirname, '..', 'index.html'));
@@ -162,6 +203,7 @@ ipcMain.handle('samples:list', () => listSamples());
 ipcMain.handle('samples:read', (e, rel) => readSample(rel));
 ipcMain.handle('samples:save', (e, name, bytes) => saveSample(name, bytes));
 ipcMain.handle('samples:open', () => shell.openPath(samplesDir));
+ipcMain.on('audio:playing', (e, on) => { setPlaying(!!on); optOutOfThrottling(); });
 
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.whenReady().then(() => {
@@ -175,6 +217,8 @@ app.whenReady().then(() => {
   watchSamples();
   buildMenu();
   createWindow();
+  optOutOfThrottling();
+  setInterval(optOutOfThrottling, 3000);
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

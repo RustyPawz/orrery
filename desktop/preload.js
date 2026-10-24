@@ -12,4 +12,6 @@ contextBridge.exposeInMainWorld('orreryDesktop', {
   saveSample: (name, bytes) => ipcRenderer.invoke('samples:save', name, new Uint8Array(bytes)),
   openSamplesFolder: () => ipcRenderer.invoke('samples:open'),
   onSamplesChanged: cb => ipcRenderer.on('samples:changed', () => cb()),
+  // playing keeps the computer awake and makes sure every audio process is exempt from background throttling
+  setPlaying: on => ipcRenderer.send('audio:playing', !!on),
 });
