@@ -2,9 +2,9 @@
 
 ![Orrery running the Crypt demo patch](preview.png)
 
-**Play it: <https://rustypawz.github.io/orrery/>**
+**Play it: <https://rustypawz.github.io/orrery/>**, or install the desktop app (see [Desktop app](#desktop-app)).
 
-Orrery is a generative modular music studio that runs in your browser. You drop modules onto a canvas, wire them together, and the patch plays itself: clocks fire pulses, sequencers and chord modules pick notes, synths, drums and samplers sound them, and modulation keeps reshaping everything over time. Every event travels visibly down its wire, so you can watch why each note happened.
+Orrery is a generative modular music studio that runs in your browser or as a desktop app. You drop modules onto a canvas, wire them together, and the patch plays itself: clocks fire pulses, sequencers and chord modules pick notes, synths, drums and samplers sound them, and modulation keeps reshaping everything over time. Every event travels visibly down its wire, so you can watch why each note happened.
 
 It's a companion to the [RedtailWorks FM-1 firmwares](https://rustypawz.github.io/fm1-HYP1/). A [RedtailWorks](https://www.redtail.works) project.
 
@@ -51,9 +51,51 @@ Patches are saved as songs in your browser, as many as you like, and you swap be
 
 ## Settings
 
-**Settings** in the header turns off drawing you don't need: moving pulses on wires, crawling dashes, glow, the note trail, the background grid, and high-res drawing. It can also cap the frame rate at 30 or 15 fps. **Low-power preset** does all of that at once. None of it changes the music. Settings are saved in your browser, and moving pulses and dashes start off if your system asks for reduced motion.
+**Settings** in the header turns off drawing you don't need: moving pulses on wires, crawling dashes, glow, the note trail, the background grid, and high-res drawing. It can also cap the frame rate at 30 or 15 fps. None of that changes the music. Moving pulses and dashes start off if your system asks for reduced motion.
 
-MIDI needs Chrome or Edge (Web MIDI). Everything else works in any current browser.
+**Audio engine** settings keep the sound clean on slower computers:
+
+- **Engine:** **Stable** uses a bigger sound card buffer and schedules further ahead (a little more delay, far fewer dropouts). **Balanced** is the default, and **Low latency** is for fast machines and live playing.
+- **Effects quality:** **Eco** uses shorter mono reverb tails, skips oversampling on Drive, Tape and Wavefolder, and caps Cloud's grain density.
+- **Notes per instrument:** caps how many notes each voice can have sounding at once, so dense patches can't pile up.
+
+**Low-power preset** sets all of the above at once. Scheduling and modulation run on a worker thread, so the music keeps time even when the window is hidden or minimised. Settings are saved on this computer.
+
+MIDI needs Chrome or Edge (Web MIDI), or the desktop app. Everything else works in any current browser.
+
+## Desktop app
+
+The desktop app is the same Orrery in its own window, with a plugins folder. Build an installer from this repository:
+
+```bash
+npm install
+npm run dist:win     # or dist:mac / dist:linux, on that system
+```
+
+The installer lands in `dist/`. It puts an Orrery shortcut on the desktop and in the Start menu. `npm start` runs the app straight from the source.
+
+### Samples folder
+
+Drop audio files into `Documents/Orrery/samples` (**File → Open Samples Folder**), loose or in subfolders. They appear in the Rack under **Sample folder**, grouped by subfolder, and the list updates as you add or remove files.
+
+- Click a sample to add a Sampler with it. If a Sampler or Cloud is selected, the click swaps that module's sound instead.
+- Audio you import or drop onto the canvas is saved into `samples/Imported`, so all your sounds stay in one place.
+- Songs remember folder samples by their path, so keep files where they are once a song uses them. **Export song file** still bundles the audio in, so an exported song plays on any computer.
+
+## Plugins
+
+Plugins add new module types. Each one is a single `.js` file. In the desktop app, drop it into `Documents/Orrery/plugins` (**File → Open Plugins Folder**); saving a file there reloads it live. On the website, use **Settings → Plugins → Add plugin file…**.
+
+A plugin can be:
+
+- a normal circle module with dials;
+- a voice with its own sound;
+- a free-form shape that draws itself and takes mouse input;
+- a module with its own HTML controls.
+
+If a song uses a plugin you've removed, those modules wait as placeholders with their settings and wires intact.
+
+Start from the examples in [`plugins/`](plugins) and the guide in [PLUGINS.md](PLUGINS.md). The desktop app puts the examples in your plugins folder the first time it runs.
 
 ## License
 

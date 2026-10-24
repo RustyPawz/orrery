@@ -1,0 +1,59 @@
+{
+  "name": "orrery",
+  "productName": "Orrery",
+  "version": "1.0.0",
+  "description": "A generative modular music studio: wire clocks, sequencers, voices and modulation into patches that play themselves.",
+  "main": "desktop/main.js",
+  "author": "RedtailWorks",
+  "license": "GPL-3.0",
+  "homepage": "https://rustypawz.github.io/orrery/",
+  "repository": "github:RustyPawz/orrery",
+  "scripts": {
+    "start": "electron .",
+    "icon": "node desktop/make-icon.js",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "works.redtail.orrery",
+    "productName": "Orrery",
+    "files": [
+      "index.html",
+      "desktop/main.js",
+      "desktop/preload.js",
+      "desktop/icon.png",
+      "plugins/**",
+      "PLUGINS.md"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "desktop/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Orrery"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "desktop/icon.png",
+      "category": "public.app-category.music"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "desktop/icon.png",
+      "category": "Audio"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  }
+}

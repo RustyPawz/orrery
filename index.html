@@ -78,6 +78,9 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 .pop .opt input{appearance:auto;width:15px;height:15px;margin:0;padding:0;accent-color:var(--lime);flex:none}
 .pop .opt select{margin-left:auto;padding:3px 9px}
 #setBtn[aria-expanded="true"]{border-color:var(--lime);color:var(--lime)}
+#setPanel{max-height:calc(100% - 20px);overflow-y:auto}
+#panels{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:1}
+.plugPanel{position:absolute;left:0;top:0;transform-origin:0 0;pointer-events:auto;font-size:11px;color:var(--fg)}
 .pop ul{list-style:none;margin:0;padding:0;max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px}
 .pop li{display:flex;align-items:center;gap:6px;font-size:11px;background:var(--panel-2);border-radius:6px;padding:4px 4px 4px 8px}
 .pop li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -129,6 +132,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
 </header>
 <div id="stage">
   <canvas id="cv"></canvas>
+  <div id="panels"></div>
   <aside class="rack" id="rack"></aside>
   <div class="drop" id="drop" hidden>DROP AUDIO TO MAKE A SAMPLER</div>
   <div class="hint">Tap a module to bloom its dials · drag rings <kbd>↕</kbd> · wire <kbd>●</kbd>→<kbd>○</kbd> events, <kbd>■</kbd>→<kbd>□</kbd> audio, <kbd>◆</kbd>→any dial<span class="long"> · drag a selected module's rim to resize · <kbd>◯ Section</kbd> circles part of the patch, double-tap a label to rename, drag it to move the whole group · tap a mod knob or wire to cut · drop audio files anywhere</span></div>
@@ -148,7 +152,16 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
     <p class="st">Display &amp; performance</p>
     <div id="setOpts"></div>
     <div class="row"><button type="button" id="setLow">Low-power preset</button><button type="button" id="setDef">Restore defaults</button></div>
-    <p>These only change what's drawn, never the music. Turning effects off or lowering the frame rate saves CPU and battery. Saved in this browser.</p>
+    <p>The display options only change what's drawn, never the music; turning them off or lowering the frame rate saves CPU and battery. Low-power preset also eases the audio engine below. Saved on this computer.</p>
+    <p class="st" style="margin-top:8px">Audio engine</p>
+    <div id="audOpts"></div>
+    <p class="mon" id="audStat"></p>
+    <p>If the audio crackles, choose Stable (a bigger buffer, a little more delay), Eco effects (shorter reverbs, lighter saturation) or fewer notes per instrument.</p>
+    <p class="st" style="margin-top:8px">Plugins</p>
+    <ul id="plugList"></ul>
+    <div class="row"><button type="button" id="plugAdd">Add plugin file…</button><button type="button" id="plugReload">Reload plugins</button></div>
+    <input type="file" id="plugFile" accept=".js,text/javascript" multiple hidden>
+    <p>A plugin is a .js file that adds new module types. See PLUGINS.md to make your own. Plugins run with full access to Orrery, so only add ones you trust.</p>
   </div>
   <div class="pop midi" id="midiPanel" hidden>
     <p class="st" id="midiStatus">Not connected.</p>
@@ -215,7 +228,8 @@ const LOOP_Q=-3.5;
 function softClip(){const s=ctx.createWaveShaper(),c=new Float32Array(1025);for(let i=0;i<1025;i++)c[i]=Math.tanh(i/512-1);s.curve=c;return s}
 function lfo(rate,amt,prm,type){const o=ctx.createOscillator();o.type=type||'sine';o.frequency.value=rate;const g=G(amt);o.connect(g);g.connect(prm);o.start();return{o,g}}
 function initAudio(){
-  ctx=new (window.AudioContext||window.webkitAudioContext)();
+  const AC=window.AudioContext||window.webkitAudioContext;try{ctx=new AC({latencyHint:(AUD[setv.audio]||AUD.balanced).hint})}catch(e){ctx=new AC()}
+  watchLoad();
   master=G(.85);const lim=ctx.createDynamicsCompressor();lim.threshold.value=-10;lim.ratio.value=8;lim.attack.value=.003;
   ana=ctx.createAnalyser();ana.fftSize=1024;anaBuf=new Float32Array(1024);
   master.connect(lim);lim.connect(ana);ana.connect(ctx.destination);
@@ -224,11 +238,25 @@ function initAudio(){
   const d=noiseBuf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
   nodes.forEach(ensureAu);rewire();
 }
+// a new engine mode needs a new AudioContext: rebuild every module's audio on it, keeping the patch and play state
+async function restartAudio(){
+  if(!ctx)return;const was=playing;nodes.forEach(killAu);wires.forEach(w=>{w.g=null});try{await ctx.close()}catch(e){}ctx=null;initAudio();
+  if(was){await ctx.resume();t0=ctx.currentTime+.05;nodes.forEach(n=>{n.st={}})}else await ctx.suspend();
+}
+// audio load: Chromium reports how busy the audio thread is; warn before it starts dropping out
+let audioLoad=null,loadWarnT=0;
+function watchLoad(){const rc=ctx.renderCapacity;if(!rc||!rc.start)return;
+  try{rc.addEventListener('update',e=>{audioLoad={avg:e.averageLoad,peak:e.peakLoad,under:e.underrunRatio};
+    if(playing&&(e.underrunRatio>.01||e.averageLoad>.9)&&performance.now()-loadWarnT>30000){loadWarnT=performance.now();flashMsg('Audio is overloaded. In Settings, try the Stable engine, Eco effects or fewer notes per instrument.')}});rc.start({updateInterval:1})}catch(e){}}
+// notes per instrument: past the cap, a new note is skipped rather than overloading the audio thread
+function voiceOk(n,end){const L2=(n.st.vl||(n.st.vl=[])),tn=ctx.currentTime;for(let i=L2.length-1;i>=0;i--)if(L2[i]<tn)L2.splice(i,1);if(L2.length>=setv.voices)return false;L2.push(end);return true}
+const eco=()=>setv.fx==='eco',overs=q=>eco()?'none':q;
 
 /* ---------- synth voice: everything shapeable ---------- */
 function synthNote(n,t,midi,vel,len){
   const p=n.p;if(!n.au)return;
   const f=mtof(midi+12*p.oct+p.semi),atk=Math.max(.001,p.attack),hold=len?Math.max(p.hold,len-atk):p.hold,rel=Math.max(.01,p.release),end=t+atk+hold+rel*1.2+.05;
+  if(!voiceOk(n,end))return;
   const U=p.detune>0?p.unison:1,pk=vel*p.level*.28/Math.sqrt(Math.max(1,U/2));
   const amp=G(0);amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime(pk,t+atk);amp.gain.setValueAtTime(pk,t+atk+hold);amp.gain.setTargetAtTime(0,t+atk+hold,rel/4);
   const fl=filt(FTYPES[p.ftype],1000,p.reso);
@@ -343,22 +371,34 @@ function decode(ab){const c=decoder||ctx;if(!c)return Promise.reject(new Error('
 const idb=(()=>{let dbp=null;const db=()=>dbp||(dbp=new Promise((res,rej)=>{const r=indexedDB.open('orrery',1);r.onupgradeneeded=()=>r.result.createObjectStore('samples');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)}));
   return{async put(k,v){const d=await db();return new Promise((res,rej)=>{const tx=d.transaction('samples','readwrite');tx.objectStore('samples').put(v,k);tx.oncomplete=res;tx.onerror=()=>rej(tx.error)})},
          async get(k){const d=await db();return new Promise((res,rej)=>{const r=d.transaction('samples').objectStore('samples').get(k);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}}})();
+// samples live in three places: built in, the desktop samples folder ("file:<path inside it>"), or this browser's storage
+const FOLDER='file:',sampleName=s=>s.split('/').pop().replace(/\.[^.]+$/,'');
+async function ensureSample(sid){
+  if(!sid||SAMPLES[sid])return !!SAMPLES[sid];
+  try{if(sid.startsWith(FOLDER)&&window.orreryDesktop){regSample(sid,sampleName(sid),await decode(await window.orreryDesktop.readSample(sid.slice(FOLDER.length))));return true}}catch(e){}
+  try{const rec=await idb.get(sid);if(rec){regSample(sid,rec.name,await decode(rec.data));return true}}catch(e){}// also how exported songs bring folder samples to another computer
+  return false;
+}
+// put a sample on a Sampler or Cloud, or make a new Sampler for it: long sounds become tempo-locked loops
+function useSample(sid,x,y,target){
+  const D=SAMPLES[sid].buf.duration,bars=D/(60/bpm)/4,mode=D>1.6?2:0,barsIdx=LOOP_BARS.reduce((bi,b,i)=>Math.abs(b-bars)<Math.abs(LOOP_BARS[bi]-bars)?i:bi,0);
+  if(target&&target.type==='cloud')target.sid=sid;
+  else if(target&&target.type==='sampler'){target.sid=sid;target.p.mode=mode;target.p.bars=barsIdx;target.p.start=0;target.p.len=1}
+  else{const n=mk('sampler',x,y,{mode,bars:barsIdx});n.sid=sid;sel=n}
+  rewire();save();
+}
 async function importFile(file,x,y,target){
   const ab=await file.arrayBuffer();let buf;
   try{buf=await decode(ab)}catch(e){flashMsg(`Couldn't read ${file.name}. Try a WAV, MP3, OGG or FLAC file.`);return}
-  const id='s'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  let id=null;
+  // in the desktop app imported audio is kept in samples/Imported, so it sits with the rest of your samples
+  if(window.orreryDesktop)try{id=FOLDER+await window.orreryDesktop.saveSample(file.name,ab)}catch(e){id=null}
+  if(!id){id='s'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);try{await idb.put(id,{name:file.name.replace(/\.[^.]+$/,''),data:ab})}catch(e){}}
   regSample(id,file.name.replace(/\.[^.]+$/,''),buf);
-  try{await idb.put(id,{name:SAMPLES[id].name,data:ab})}catch(e){}
-  const D=buf.duration,beats=D/(60/bpm),bars=beats/4;
-  const mode=D>1.6?2:0,barsIdx=LOOP_BARS.reduce((bi,b,i)=>Math.abs(b-bars)<Math.abs(LOOP_BARS[bi]-bars)?i:bi,0);
-  if(target&&target.type==='cloud')target.sid=id;
-  else if(target&&target.type==='sampler'){target.sid=id;target.p.mode=mode;target.p.bars=barsIdx;target.p.start=0;target.p.len=1}
-  else{const n=mk('sampler',x,y,{mode,bars:barsIdx});n.sid=id;sel=n}
-  rewire();save();
+  useSample(id,x,y,target);
 }
 async function loadSamples(){
-  for(const n of nodes){if((n.type!=='sampler'&&n.type!=='cloud')||!n.sid||SAMPLES[n.sid])continue;
-    try{const rec=await idb.get(n.sid);if(rec){regSample(n.sid,rec.name,await decode(rec.data))}}catch(e){}}
+  for(const n of nodes){if((n.type!=='sampler'&&n.type!=='cloud')||!n.sid||SAMPLES[n.sid])continue;await ensureSample(n.sid)}
 }
 function samplerHit(n,ev){
   const S=SAMPLES[n.sid];if(!S||!n.au)return;
@@ -367,6 +407,7 @@ function samplerHit(n,ev){
   if(p.mode===1){midi=60+root+12*p.oct+degToSemi(ev.deg);rate*=Math.pow(2,(midi-p.rootNote)/12)}
   else if(p.mode===2){rate=dur/(LOOP_BARS[p.bars]*4*60/bpm)}
   else if(p.mode===3){const k=SLICES[p.slices],i=((ev.deg%k)+k)%k,sl=dur/k;off+=i*sl;dur=sl}
+  if(!voiceOk(n,t+dur/rate))return;
   const src=ctx.createBufferSource();src.buffer=buf;src.playbackRate.value=rate;
   const play=dur/rate,a=Math.min(p.attack,play*.5),r=Math.min(p.release,play*.9),pk=ev.vel*p.level,g=G(0);
   g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(pk,t+a+.001);g.gain.setValueAtTime(pk,Math.max(t+a+.001,t+play-r));g.gain.linearRampToValueAtTime(0,t+play);
@@ -377,8 +418,8 @@ function samplerHit(n,ev){
 }
 
 /* ---------- FX modules ---------- */
-function irBuf(size){const sr=ctx.sampleRate,len=Math.floor(sr*size),b=ctx.createBuffer(2,len,sr);
-  for(let c=0;c<2;c++){const d=b.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.6)}return b}
+function irBuf(size){if(eco())size=Math.min(size,2.5);const sr=ctx.sampleRate,len=Math.floor(sr*size),b=ctx.createBuffer(eco()?1:2,len,sr);
+  for(let c=0;c<b.numberOfChannels;c++){const d=b.getChannelData(c);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.6)}return b}
 const FX={
   delay:{name:'Delay',fam:'time',params:[P('time','time',0,6,3,1,L(DLY_L)),P('fb','feedback',0,.95,.45),P('tone','tone',0,1,.5),P('mix','mix',0,1,.3)],
     mk(){const d=ctx.createDelay(6),lp=filt('lowpass',3000),fb=G(.4);d.connect(lp);lp.connect(fb);fb.connect(d);
@@ -407,7 +448,7 @@ const FX={
   autopan:{name:'Auto-Pan',fam:'mod',params:[P('rate','rate',.05,8,.5,.01,hz),P('depth','depth',0,1,.8),P('mix','mix',0,1,1)],
     mk(){const pn=ctx.createStereoPanner(),l=lfo(.5,.8,pn.pan);return{i:pn,o:pn,set(p){sm(l.o.frequency,p.rate);sm(l.g.gain,p.depth)},stop(){l.o.stop()}}}},
   drive:{name:'Drive',fam:'dirt',params:[P('amount','amount',0,1,.4),P('tone','tone',0,1,.6),P('level','level',0,1,.7),P('mix','mix',0,1,1)],
-    mk(){const sh=ctx.createWaveShaper();sh.oversample='4x';const lp=filt('lowpass',6000),post=G(.7);chain(sh,lp,post);
+    mk(){const sh=ctx.createWaveShaper();sh.oversample=overs('4x');const lp=filt('lowpass',6000),post=G(.7);chain(sh,lp,post);
       return{i:sh,o:post,set(p){const k=1+p.amount*60,c=new Float32Array(2048);for(let i=0;i<2048;i++){const x=i/1023.5-1;c[i]=Math.tanh(k*x)/Math.tanh(k)}sh.curve=c;sm(lp.frequency,800*Math.pow(20,p.tone));sm(post.gain,p.level)}}}},
   crusher:{name:'Crusher',fam:'dirt',params:[P('bits','bits',1,12,5,1,v=>v+' bit'),P('tone','tone',0,1,.5),P('mix','mix',0,1,1)],
     mk(){const sh=ctx.createWaveShaper(),lp=filt('lowpass',4000);chain(sh,lp);
@@ -423,7 +464,7 @@ const FX={
     mk(){const c=ctx.createDynamicsCompressor(),g=G(1.5);c.connect(g);
       return{i:c,o:g,set(p){sm(c.threshold,p.thresh);sm(c.ratio,p.ratio);sm(g.gain,p.makeup)}}}},
   tape:{name:'Tape',fam:'dirt',params:[P('wow','wow',0,1,.3),P('flutter','flutter',0,1,.2),P('drive','saturation',0,1,.3),P('mix','mix',0,1,1),P('hiss','hiss',0,1,.15,.01,pct,{sat:1}),P('tone','tone',0,1,.6,.01,pct,{sat:1})],
-    mk(){const d=ctx.createDelay(.1);d.delayTime.value=.012;const w=lfo(.45,0,d.delayTime),fl=lfo(6.5,0,d.delayTime),sh=ctx.createWaveShaper(),lp=filt('lowpass',9000),o=G(1);sh.oversample='2x';chain(d,sh,lp,o);
+    mk(){const d=ctx.createDelay(.1);d.delayTime.value=.012;const w=lfo(.45,0,d.delayTime),fl=lfo(6.5,0,d.delayTime),sh=ctx.createWaveShaper(),lp=filt('lowpass',9000),o=G(1);sh.oversample=overs('2x');chain(d,sh,lp,o);
       const hs=ctx.createBufferSource();hs.buffer=noiseBuf;hs.loop=true;const hp=filt('highpass',3000),hg=G(0);chain(hs,hp,hg,o);hs.start();let lastD=-1;
       return{i:d,o,set(p){sm(w.g.gain,p.wow*.004);sm(fl.g.gain,p.flutter*.0006);sm(lp.frequency,2500*Math.pow(7,p.tone));sm(hg.gain,p.hiss*.02);
         if(p.drive!==lastD){lastD=p.drive;const k=1+p.drive*8,c=new Float32Array(2048);for(let i=0;i<2048;i++){const x=i/1023.5-1;c[i]=Math.tanh(k*x)/Math.tanh(k)}sh.curve=c}},
@@ -440,7 +481,7 @@ const FX={
       return{i,o,set(p){sm(fb.gain,p.shimmer);sm(lp.frequency,1500*Math.pow(8,p.tone));
         if(last===null){cv.buffer=irBuf(p.size);last=p.size}else if(p.size!==last){last=p.size;clearTimeout(tm);tm=setTimeout(()=>cv.buffer=irBuf(last),150)}},stop(){ps.stop()}}}},
   folder:{name:'Wavefolder',fam:'dirt',params:[P('fold','fold',1,8,2.5,.1,v=>'×'+v.toFixed(1)),P('sym','symmetry',-1,1,0,.01,v=>sgn(Math.round(v*100))+'%',{bi:1}),P('tone','tone',0,1,.7),P('mix','mix',0,1,1)],
-    mk(){const pre=G(.5),bias=ctx.createConstantSource(),bg=G(0),sh=ctx.createWaveShaper(),hp=filt('highpass',25),lp=filt('lowpass',8000);bias.connect(bg);bg.connect(sh);pre.connect(sh);chain(sh,hp,lp);bias.start();sh.oversample='4x';let last=-1;
+    mk(){const pre=G(.5),bias=ctx.createConstantSource(),bg=G(0),sh=ctx.createWaveShaper(),hp=filt('highpass',25),lp=filt('lowpass',8000);bias.connect(bg);bg.connect(sh);pre.connect(sh);chain(sh,hp,lp);bias.start();sh.oversample=overs('4x');let last=-1;
       return{i:pre,o:lp,set(p){sm(bg.gain,p.sym*.5);sm(lp.frequency,800*Math.pow(20,p.tone));
         if(p.fold!==last){last=p.fold;const c=new Float32Array(4096);for(let i=0;i<4096;i++){const x=i/2047.5-1;c[i]=Math.sin(x*p.fold*Math.PI/2)}sh.curve=c}},stop(){bias.stop()}}}},
 };
@@ -679,6 +720,7 @@ function looperClear(n){if(!n.au)return;const A=n.au,t=ctx.currentTime,L2=Math.m
   [A.fb.gain,A.wet.gain].forEach(x=>{x.cancelScheduledValues(t);x.setValueAtTime(0,t)});A.fb.gain.setValueAtTime(n.p.decay,t+L2);A.wet.gain.setValueAtTime(n.p.mix,t+L2);flashMsg('Loop cleared')}
 function pluckString(n,t,midi,vel){
   const p=n.p;let f=mtof(midi);while(f>330)f/=2;// a feedback loop can't be shorter than one 128-sample block
+  if(!voiceOk(n,t+Math.min(10,6.9/f/Math.max(1e-4,-Math.log(p.decay)))))return;
   const per=1/f,src=ctx.createBufferSource(),pl=filt('lowpass',500+p.pluck*12000),bg=G(0),d=ctx.createDelay(.1),lp=filt('lowpass',800+p.bright*9000,LOOP_Q),fb=G(p.decay),out=G(vel*p.level*.9);
   src.buffer=noiseBuf;d.delayTime.value=per;bg.gain.setValueAtTime(1,t);bg.gain.setValueAtTime(0,t+per*1.5);
   chain(src,pl,bg,d);chain(d,lp,fb,d);d.connect(out);out.connect(n.au.out);
@@ -829,7 +871,7 @@ Object.assign(TYPES,{
     build:voiceBuild,fast:{level:LEVEL_FAST},
     on(n,port,ev,emit){n.st.cd=ev.deg;emit('hit',ev)},
     ahead(n,now,h){const S=SAMPLES[n.sid];if(!S||!n.au)return;if(n.st.ng==null||n.st.ng<now-.5)n.st.ng=now;
-      for(let k=0;k<64&&n.st.ng<h;k++){cloudGrain(n,n.st.ng,S);n.st.ng+=(.5+Math.random())/eff(n,'density',n.st.ng)}}},
+      for(let k=0;k<64&&n.st.ng<h;k++){cloudGrain(n,n.st.ng,S);n.st.ng+=(.5+Math.random())/Math.min(eco()?20:60,eff(n,'density',n.st.ng))}}},
   // ---- processors: audio modules played by events ----
   ducker:{name:'Ducker',cat:'Processors',color:'#ff7a9c',r:46,glyph:'duck',ins:[{id:'in',a:Math.PI,kind:AU},{id:'trig',a:2.5,kind:EV,tag:'trig'}],outs:[{id:'out',a:0,kind:AU},{id:'cv',a:.6,kind:CV,tag:'pump'}],
     params:[P('depth','depth',0,1,.8),P('release','release',.03,1.5,.25,.01,sec),P('attack','attack',0,.05,.005,.001,sec)],
@@ -922,15 +964,25 @@ function swStep(n,t){
   swSet(n,t,i);
 }
 function euOn(n,i){const s=n.p.steps,h=Math.min(n.p.hits,s),k=(i+n.p.rot)%s;return h>0&&Math.floor((k+1)*h/s)-Math.floor(k*h/s)===1}
-// layout precompute
-Object.values(TYPES).forEach(T=>{
-  T.ringKeys=T.params.filter(p=>!p.sat&&!p.hide).slice(0,4).map(p=>p.k);
+// a module from a plugin that isn't installed: keeps its saved data so nothing is lost, and comes back when the plugin does
+TYPES.missing={name:'Missing plugin',cat:'',color:'#8a80b0',r:40,glyph:'none',ins:[],outs:[],params:[],title:n=>'missing: '+(n.orig?n.orig.type:'?')};
+// layout precompute: dial placement, and port positions for free-form (box) modules
+function prepType(T){
+  if(T.box){T.r=Math.max(T.box.w,T.box.h)/2;const{w,h}=T.box;
+    const side=(list,def)=>list.forEach((p,i,a)=>{if(p.x!=null&&p.y!=null){p.nx=p.nx??(Math.sign(p.x)||0);p.ny=p.ny??(p.nx?0:Math.sign(p.y));return}
+      const s=p.side||def,f=(i+1)/(a.length+1);
+      if(s==='left'){p.x=-w/2-5;p.y=-h/2+f*h;p.nx=-1;p.ny=0}else if(s==='right'){p.x=w/2+5;p.y=-h/2+f*h;p.nx=1;p.ny=0}
+      else if(s==='top'){p.x=-w/2+f*w;p.y=-h/2-5;p.nx=0;p.ny=-1}else{p.x=-w/2+f*w;p.y=h/2+5;p.nx=0;p.ny=1}});
+    side(T.ins.filter(p=>!p.side||p.side==='left'),'left');side(T.outs.filter(p=>!p.side||p.side==='right'),'right');
+    side(T.ins.filter(p=>p.side&&p.side!=='left'),'top');side(T.outs.filter(p=>p.side&&p.side!=='right'),'bottom')}
+  T.ringKeys=T.box?[]:T.params.filter(p=>!p.sat&&!p.hide).slice(0,4).map(p=>p.k);
   T.satKeys=T.params.filter(p=>!p.hide&&!T.ringKeys.includes(p.k)).map(p=>p.k);
   const k=T.satKeys.length,top=Math.ceil(k/2),bot=k-top;T.satA=[];
   for(let i=0;i<top;i++)T.satA.push(top===1?-Math.PI/2:-2.62+i*(2.62-.52)/(top-1));
   for(let i=0;i<bot;i++)T.satA.push(bot===1?Math.PI/2:2.62-i*(2.62-.52)/(bot-1));
   T.pd=Object.fromEntries(T.params.map(p=>[p.k,p]));
-});
+}
+Object.values(TYPES).forEach(prepType);
 const colorOf=n=>{const T=TYPES[n.type];return T.colorFn?T.colorFn(n):T.color};
 const titleOf=n=>{const T=TYPES[n.type];return n.label||(T.title?T.title(n):T.name)};
 
@@ -948,6 +1000,7 @@ function mk(type,x,y,p={},extra={}){
   if(extra.label)n.label=extra.label;
   if(type==='clock')n.p.bpm=bpm;
   if(type==='key'){n.p.scale=SCALE_NAMES.indexOf(scaleName);n.p.root=root}
+  if(T.plugin){n.data=extra.data?JSON.parse(JSON.stringify(extra.data)):{};if(T.init)T.init(n)}// plugin modules keep their own saved data
   nodes.push(n);ensureAu(n);return n;
 }
 function portDef(n,id,out){return (out?TYPES[n.type].outs:TYPES[n.type].ins).find(p=>p.id===id)}
@@ -965,13 +1018,13 @@ function rewire(){
   for(const w of wires){if(w.k!==CV)continue;
     if(w.g){try{w.g.disconnect()}catch(e){}w.g=null}
     const A=byId(w.a),B=byId(w.b),f=B&&fastOf(B,w.bk);if(!A||!B||!f||!A.au||!A.au.sig||!B.au)continue;
-    w.gs=f.scale;w.g=G(w.depth*f.scale);A.au.sig.connect(w.g);w.g.connect(f.to(B));}
+    w.gs=f.scale;w.g=G(w.depth*f.scale);((A.au.sigs&&A.au.sigs[w.ao])||A.au.sig).connect(w.g);w.g.connect(f.to(B));}
   for(const n of nodes)if(n.au&&n.au.out)try{n.au.out.disconnect()}catch(e){}
   for(const w of wires){if(w.k!==AU)continue;const A=byId(w.a),B=byId(w.b);if(A&&B&&A.au&&A.au.out&&B.au&&B.au.inp)A.au.out.connect(B.au.inp)}
   for(const n of nodes)if(n.au&&n.au.out&&!wires.some(w=>w.k===AU&&w.a===n.id))n.au.out.connect(directBus);
   applyMix();
 }
-function removeNode(n){killAu(n);wires=wires.filter(w=>w.a!==n.id&&w.b!==n.id);nodes=nodes.filter(x=>x!==n);if(sel===n)sel=null;rewire()}
+function removeNode(n){killAu(n);wires=wires.filter(w=>w.a!==n.id&&w.b!==n.id);orphanWires=orphanWires.filter(w=>w.a!==n.id&&w.b!==n.id);nodes=nodes.filter(x=>x!==n);if(sel===n)sel=null;rewire()}
 function emit(n,port,ev,depth,only){
   if(depth>24)return;
   for(const w of wires){
@@ -1012,30 +1065,33 @@ function modTick(){
   const t=now(),dt=lastMod?Math.min(.2,Math.max(0,t-lastMod)):0;lastMod=t;
   for(const n of nodes){const T=TYPES[n.type];if(T.tickMod)T.tickMod(n,t,dt);
     // CV sources computed in JS also drive the audio-rate taps on fast dials
-    if(T.cvOut&&n.au&&n.au.cs)n.au.cs.offset.setTargetAtTime(T.modVal(n,'',t)||0,ctx.currentTime,.012)}
+    if(T.cvOut&&n.au&&n.au.css){for(const k in n.au.css)n.au.css[k].cs.offset.setTargetAtTime(T.modVal(n,k,t)||0,ctx.currentTime,.012)}
+    else if(T.cvOut&&n.au&&n.au.cs)n.au.cs.offset.setTargetAtTime(T.modVal(n,'',t)||0,ctx.currentTime,.012)}
   if(!ctx||!playing)return;
   for(const n of nodes){if(!n.hasMods||!n.au||!n.au.set)continue;
     const q=effP(n,t,true),key=JSON.stringify(q);if(key!==n.lastQ){n.lastQ=key;n.au.set(q)}}
 }
-setInterval(modTick,30);
+
 function addNote(n,t,midi,dur){notes.push({t,midi,c:colorOf(n),dur:Math.min(dur,1.5)})}
 function clearNext(n){for(const k in n.st)if(k.startsWith('nx_'))n.st[k]=null}
 function sched(){
   if(!playing||!ctx)return;
-  const now=ctx.currentTime,spb=60/bpm;budget=900;
+  const now=ctx.currentTime,spb=60/bpm,HZ=now+(document.hidden?1.5:(AUD[setv.audio]||AUD.balanced).ahead);budget=900;
   for(const n of nodes){const T=TYPES[n.type];
     // modules that make their own timing (generators, grains, risers) schedule up to the same horizon as the clocks
-    if(T.ahead)T.ahead(n,now,now+.12,(port,ev)=>{n.fires.push(ev.t);emit(n,port,{deg:0,vel:.8,...ev},0)});
+    if(T.ahead)T.ahead(n,now,HZ,(port,ev)=>{n.fires.push(ev.t);emit(n,port,{deg:0,vel:.8,...ev},0)});
     if(!T.clocks)continue;
     for(const[port,beats,sw]of T.clocks(n)){
       const int=spb*beats,key='nx_'+port;let nx=n.st[key];
-      if(nx==null||nx>now+int+.5||nx<now-1)nx=t0+Math.ceil((now+.02-t0)/int-1e-6)*int;
-      while(nx<now+.12){const k=Math.round((nx-t0)/int);let t=nx;if(sw&&k%2===1)t+=(n.p.swing||0)*int*.5;
+      if(nx==null||nx>HZ+int+.5||nx<now-1)nx=t0+Math.ceil((now+.02-t0)/int-1e-6)*int;
+      while(nx<HZ){const k=Math.round((nx-t0)/int);let t=nx;if(sw&&k%2===1)t+=(n.p.swing||0)*int*.5;
         if(port[0]==='_')T.tick(n,t);else{n.fires.push(t);emit(n,port,{t,deg:0,vel:n.p.vel??(k%4===0?.95:.8)},0)}nx+=int}
       n.st[key]=nx;
     }}
 }
-setInterval(sched,25);
+// one steady tick drives scheduling and modulation; a worker's timer keeps running when the window is hidden or minimised
+function tick(){sched();modTick()}
+try{const tw=new Worker(URL.createObjectURL(new Blob(["setInterval(()=>postMessage(0),25)"],{type:"text/javascript"})));tw.onmessage=tick}catch(e){setInterval(tick,25)}
 function setBpm(v){
   bpm=Math.min(220,Math.max(40,Math.round(v)));
   nodes.forEach(n=>{if(n.type==='clock')n.p.bpm=bpm;clearNext(n);if(n.au&&n.au.bpm&&n.au.set)n.au.set(n.p)});
@@ -1049,19 +1105,24 @@ const LIB='orrery-songs-v1',OLD='orrery-patch-v2';
 let lib={cur:null,songs:{}},midiMap=[],saveTm=null;
 function serialize(){return{bpm,scaleName,root,midi:midiMap,
   sections:sections.map(S=>({x:S.x,y:S.y,r:S.r,name:S.name,c:S.c})),
-  nodes:nodes.map(n=>({id:n.id,type:n.type,x:n.x,y:n.y,sz:n.sz,label:n.label,p:n.p,steps:n.steps,sid:n.sid,sc:n.scenes})),
-  wires:wires.map(w=>({id:w.id,a:w.a,ao:w.ao,b:w.b,bi:w.bi,bk:w.bk,k:w.k,depth:w.depth}))}}
+  nodes:nodes.map(n=>n.type==='missing'?{...n.orig,x:n.x,y:n.y,sz:n.sz}:({id:n.id,type:n.type,x:n.x,y:n.y,sz:n.sz,label:n.label,p:n.p,steps:n.steps,sid:n.sid,sc:n.scenes,data:n.data})),
+  wires:wires.map(w=>({id:w.id,a:w.a,ao:w.ao,b:w.b,bi:w.bi,bk:w.bk,k:w.k,depth:w.depth})).concat(orphanWires)}}
+// wires to modules whose plugin isn't installed: kept as saved so they reconnect when it is
+let orphanWires=[];
 function writeLib(){try{localStorage.setItem(LIB,JSON.stringify(lib))}catch(e){flashMsg('Browser storage is full. Export songs you want to keep, then delete some.')}}
 function flushSave(){clearTimeout(saveTm);saveTm=null;if(lib.cur&&lib.songs[lib.cur]){lib.songs[lib.cur].data=serialize();lib.songs[lib.cur].t=Date.now()}writeLib()}
 function save(){clearTimeout(saveTm);saveTm=setTimeout(flushSave,300)}
 window.addEventListener('pagehide',flushSave);
-function resetPatch(){nodes.forEach(killAu);nodes=[];wires=[];sections=[];pulses=[];sel=null;secSel=null;midiArm=null;midiMap=[];uid=1}
+function resetPatch(){nodes.forEach(killAu);nodes=[];wires=[];orphanWires=[];sections=[];pulses=[];sel=null;secSel=null;midiArm=null;midiMap=[];uid=1}
 function applyPatch(d){
   resetPatch();if(!d)return;
   bpm=d.bpm||bpm;scaleName=SCALES[d.scaleName]?d.scaleName:scaleName;root=d.root??root;midiMap=Array.isArray(d.midi)?d.midi:[];
-  (d.nodes||[]).forEach(o=>{if(!TYPES[o.type])return;const n=mk(o.type,o.x,o.y,o.p,{steps:o.steps,sid:o.sid,sz:o.sz,sc:o.sc});n.id=o.id;if(o.label)n.label=o.label});
+  (d.nodes||[]).forEach(o=>{
+    if(!TYPES[o.type]||o.type==='missing'){const n=mk('missing',o.x,o.y,{},{sz:o.sz});n.id=o.id;n.orig=o;return}
+    const n=mk(o.type,o.x,o.y,o.p,{steps:o.steps,sid:o.sid,sz:o.sz,sc:o.sc,data:o.data});n.id=o.id;if(o.label)n.label=o.label});
   uid=Math.max(0,...(d.nodes||[]).map(o=>o.id),...(d.wires||[]).map(w=>w.id))+1;
-  (d.wires||[]).forEach(w=>{const A=byId(w.a),B=byId(w.b);if(A&&B&&(w.k===CV?linkCV(A,w.ao,B,w.bk,w.depth):link(A,w.ao,B,w.bi)))wires[wires.length-1].id=w.id});
+  (d.wires||[]).forEach(w=>{const A=byId(w.a),B=byId(w.b);if(A&&B&&(A.type==='missing'||B.type==='missing')){orphanWires.push(w);return}
+    if(A&&B&&(w.k===CV?linkCV(A,w.ao,B,w.bk,w.depth):link(A,w.ao,B,w.bi)))wires[wires.length-1].id=w.id});
   sections=(d.sections||[]).map(S=>({...S,id:uid++}));
 }
 const uniqueName=nm=>{const used=new Set(Object.values(lib.songs).map(x=>x.name));if(!used.has(nm))return nm;let i=2;while(used.has(nm+' '+i))i++;return nm+' '+i};
@@ -1086,7 +1147,7 @@ function bootSongs(){
 }
 function demo(){
   // "Crypt": hypnotic, slow-rolling goth techno in E Phrygian at 126 bpm
-  nodes.forEach(killAu);nodes=[];wires=[];pulses=[];sections=[];secSel=null;uid=1;sel=null;midiMap=[];bpm=126;scaleName='Phrygian';root=4;
+  nodes.forEach(killAu);nodes=[];wires=[];orphanWires=[];pulses=[];sections=[];secSel=null;uid=1;sel=null;midiMap=[];bpm=126;scaleName='Phrygian';root=4;
   const S=.85;// utility modules sit smaller so the instruments read first
   const clk=mk('clock',40,590,{bpm:126,swing:.06});
   mk('key',40,350,{walk:0},{sz:S});
@@ -1158,7 +1219,7 @@ function demo(){
 }
 
 /* ---------- more demos ---------- */
-function freshPatch(b,sc,r){nodes.forEach(killAu);nodes=[];wires=[];pulses=[];sections=[];secSel=null;uid=1;sel=null;midiMap=[];bpm=b;scaleName=sc;root=r}
+function freshPatch(b,sc,r){nodes.forEach(killAu);nodes=[];wires=[];orphanWires=[];pulses=[];sections=[];secSel=null;uid=1;sel=null;midiMap=[];bpm=b;scaleName=sc;root=r}
 const SY=(base,o)=>({...SYNTH_PRESETS[base],...o});
 const secAdd=(x,y,r,name,c)=>sections.push({id:uid++,x,y,r,name,c});
 
@@ -1312,10 +1373,14 @@ const DEMOS=[
 
 /* ---------- display settings (per browser, never per song) ---------- */
 const SET_KEY='orrery-settings-v1',calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
-const SET_DEF={pulses:!calm,wireAnim:!calm,glow:true,trail:true,backdrop:true,sharp:true,fps:60};
-const SET_LOW={pulses:false,wireAnim:false,glow:false,trail:false,backdrop:false,sharp:false,fps:30};
+const SET_DEF={pulses:!calm,wireAnim:!calm,glow:true,trail:true,backdrop:true,sharp:true,fps:60,audio:'balanced',fx:'high',voices:16};
+const SET_LOW={pulses:false,wireAnim:false,glow:false,trail:false,backdrop:false,sharp:false,fps:30,audio:'stable',fx:'eco',voices:8};
 const SET_UI=[['pulses','Moving pulses on wires'],['wireAnim','Crawling wire and outline dashes'],['glow','Glow around firing modules'],['trail','Note trail behind the patch'],
-  ['backdrop','Background grid and halo'],['sharp','Sharp graphics on high-res screens'],['fps','Frame rate',[60,30,15]]];
+  ['backdrop','Background grid and halo'],['sharp','Sharp graphics on high-res screens'],['fps','Frame rate',[[60,'60 fps'],[30,'30 fps'],[15,'15 fps']]]];
+const AUD_UI=[['audio','Engine',[['stable','Stable'],['balanced','Balanced'],['responsive','Low latency']]],['fx','Effects quality',[['high','High'],['eco','Eco']]],
+  ['voices','Notes per instrument',[[8,'8'],[16,'16'],[32,'32'],[64,'64']]]];
+// engine modes: the sound card buffer (latency hint) and how far ahead notes are scheduled
+const AUD={stable:{hint:'playback',ahead:.3},balanced:{hint:'balanced',ahead:.15},responsive:{hint:'interactive',ahead:.1}};
 let setv={...SET_DEF};try{Object.assign(setv,JSON.parse(localStorage.getItem(SET_KEY)||'{}'))}catch(e){}
 const dashT=t=>setv.wireAnim?t:0,glowB=v=>setv.glow?v:0;
 
@@ -1340,7 +1405,9 @@ let LOCAL=false;
 const sc=n=>LOCAL?1:(n.sz||1);
 const portsOf=n=>{const T=TYPES[n.type];return[...T.ins.map(p=>({...p,out:false})),...T.outs.map(p=>({...p,out:true}))]};
 function portPos(n,pid,out){
-  const T=TYPES[n.type],p=(out?T.outs:T.ins).find(q=>q.id===pid),a=p?p.a:(out?0:Math.PI),r=(T.r+5)*sc(n);
+  const T=TYPES[n.type],p=(out?T.outs:T.ins).find(q=>q.id===pid);
+  if(T.box&&p){const s=sc(n);return{x:n.x+p.x*s,y:n.y+p.y*s,nx:p.nx,ny:p.ny,kind:p.kind}}
+  const a=p?p.a:(out?0:Math.PI),r=(T.r+5)*sc(n);
   return{x:n.x+Math.cos(a)*r,y:n.y+Math.sin(a)*r,nx:Math.cos(a),ny:Math.sin(a),kind:p?p.kind:EV};
 }
 function satPos(n,j){const T=TYPES[n.type],a=T.satA[j],rr=(T.r+8+26*n.ui.o)*sc(n);return[n.x+Math.cos(a)*rr,n.y+Math.sin(a)*rr]}
@@ -1367,9 +1434,13 @@ function hit(wx,wy){
     if(n.ui.o>.6)for(let j=0;j<T.satKeys.length;j++){const[sx,sy]=satPos(n,j);if(Math.hypot(wx-sx,wy-sy)<14*s)return{kind:'ring',n,k:T.satKeys[j]}}
     if(n.type==='output')for(const[k2,,,dx]of MS_BTNS){if(Math.hypot(wx-(n.x+dx*s),wy-(n.y+(T.r+17)*s))<10*s+2)return{kind:'toggle',n,k:k2}}
     if(T.btns){const bs=T.btns(n);for(let i=0;i<bs.length;i++){const b=bs[i];if(Math.hypot(wx-(n.x+b.dx*s),wy-(n.y+b.dy*s))<b.r*s+2)return{kind:'btn',n,i}}}
-    const d=Math.hypot(wx-n.x,wy-n.y);
+    const d=Math.hypot(wx-n.x,wy-n.y),lx=(wx-n.x)/s,ly=(wy-n.y)/s;
+    if(T.box){if(Math.abs(lx)>T.box.w/2+2||Math.abs(ly)>T.box.h/2+2)continue;
+      // a box's top strip is its handle; the rest goes to the plugin if it wants pointer input
+      if(T.pointer&&(T.pointerHit?T.pointerHit(n,lx,ly):ly>-T.box.h/2+16))return{kind:'plug',n};return{kind:'node',n}}
     if(sel===n&&Math.abs(d-T.r*s)<Math.max(5,7/view.s))return{kind:'resize',n};
     if(d>(T.r+2)*s)continue;
+    if(T.pointer&&(T.pointerHit?T.pointerHit(n,lx,ly):d<T.r*.45*s))return{kind:'plug',n};
     if(n.type==='sequencer'){const{Ln,hr}=stepGeom(n);for(let i=0;i<Ln;i++){const[sx,sy]=stepPos(n,i);if(Math.hypot(wx-sx,wy-sy)<hr)return{kind:'step',n,i}}}
     let best=null,bd=6*s;T.ringKeys.forEach((k2,i)=>{const e=Math.abs(d-ringR(T,i)*s);if(e<bd){bd=e;best=k2}});
     if(best)return{kind:'ring',n,k:best};
@@ -1510,13 +1581,16 @@ function drawNode(n,t,hv,dragKind){
     g.globalAlpha=1;
   });
   else if(T.satKeys.length){g.fillStyle=alpha(c,.45);T.satA.forEach(a=>{g.beginPath();g.arc(x+Math.cos(a)*(R+7),y+Math.sin(a)*(R+7),1.6,0,TAU);g.fill()})}
-  // body
-  const bg=g.createRadialGradient(x,y,R*.2,x,y,R);bg.addColorStop(0,'#1c1236');bg.addColorStop(1,'#110a20');
-  g.fillStyle=bg;g.beginPath();g.arc(x,y,R,0,TAU);g.fill();
-  if(f>0){g.save();g.shadowColor=c;g.shadowBlur=glowB(22*f)}
-  g.strokeStyle=alpha(c,.55+f*.45);g.lineWidth=2+f*1.5;g.beginPath();g.arc(x,y,R,0,TAU);g.stroke();
-  if(f>0)g.restore();
-  if(sel===n){g.save();g.setLineDash([3,6]);g.lineDashOffset=-dashT(t)*12;g.strokeStyle=alpha(c,.6);g.lineWidth=1;g.beginPath();g.arc(x,y,R+4+o*2,0,TAU);g.stroke();g.restore()}
+  // body: a circle, or a rounded box for free-form modules; plugins can skip it and draw their own
+  const B=T.box,outline=pad=>{g.beginPath();if(B)g.roundRect(x-B.w/2-pad,y-B.h/2-pad,B.w+pad*2,B.h+pad*2,10+pad);else g.arc(x,y,R+pad,0,TAU)};
+  if(T.drawBody!==false){
+    const bg=g.createRadialGradient(x,y,R*.2,x,y,R);bg.addColorStop(0,'#1c1236');bg.addColorStop(1,'#110a20');
+    g.fillStyle=bg;outline(0);g.fill();
+    if(f>0){g.save();g.shadowColor=c;g.shadowBlur=glowB(22*f)}
+    g.strokeStyle=alpha(c,.55+f*.45);g.lineWidth=2+f*1.5;if(n.type==='missing')g.setLineDash([4,5]);outline(0);g.stroke();g.setLineDash([]);
+    if(f>0)g.restore();
+  }
+  if(sel===n){g.save();g.setLineDash([3,6]);g.lineDashOffset=-dashT(t)*12;g.strokeStyle=alpha(c,.6);g.lineWidth=1;outline(4+o*2);g.stroke();g.restore()}
   const cvDrag=dragKind&&dragKind.kindOfPort===CV&&n.ui.f;
   T.ringKeys.forEach((k,i)=>{const active=(hv&&hv.n===n&&hv.k===k)||(cvDrag&&hover&&hover.n===n&&hover.k===k);arcVal(x,y,ringR(T,i),fracOf(n,T.pd[k]),alpha(c,active?1:.78),active?6:4.5,T.pd[k].bi);modDot(n,k,x,y,ringR(T,i),t);midiMark(n,k,x,y,ringR(T,i),t)});
   if(n.type==='sequencer')drawSeq(n,t,c);
@@ -1534,6 +1608,7 @@ function drawNode(n,t,hv,dragKind){
       g.fillStyle=on?'#120a22':alpha(c,.8);g.font='500 10px "IBM Plex Mono",monospace';g.textAlign='center';g.fillText(lbl,bx,by+3.5)})}
   if(n.type==='chord'&&n.st.hit!=null){/* glyph flash handled */}
   glyph(n,c,f,t,T.glyph);
+  if(T.draw){g.save();g.translate(x,y);plugCall(T,'draw',()=>T.draw(g,n,t,f));g.restore()}// plugin drawing, centred on the module
   // ports
   for(const p of portsOf(n)){
     const q=portPos(n,p.id,p.out);g.lineWidth=1.8;g.strokeStyle=c;
@@ -1545,9 +1620,9 @@ function drawNode(n,t,hv,dragKind){
   }
   // labels
   g.font='10px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=sel===n?c:'rgba(200,190,240,.62)';
-  const label=titleOf(n).toUpperCase(),yl=y-R-12-(o>.03&&T.satKeys.length?26*o+14:0);
+  const top=B?B.h/2:R,label=titleOf(n).toUpperCase(),yl=y-top-12-(o>.03&&T.satKeys.length?26*o+14:0);
   g.fillText(label.length>24?label.slice(0,23)+'…':label,x,yl);
-  if(hv&&hv.n===n&&hv.k){const pd=T.pd[hv.k];g.fillStyle=c;g.fillText(`${pd.label} ${pd.fmt(n.p[hv.k],n)}`,x,y+R+(o>.03&&T.satKeys.length?26*o+40:n.type==='output'?44:20))}
+  if(hv&&hv.n===n&&hv.k){const pd=T.pd[hv.k];g.fillStyle=c;g.fillText(`${pd.label} ${pd.fmt(n.p[hv.k],n)}`,x,y+top+(o>.03&&T.satKeys.length?26*o+40:n.type==='output'?44:20))}
   const rz=(drag&&drag.kind==='resize'&&drag.n===n)||(!drag&&hover&&hover.kind==='resize'&&hover.n===n);
   if(rz){g.strokeStyle='rgba(255,255,255,.7)';g.lineWidth=3;g.setLineDash([2,4]);g.beginPath();g.arc(x,y,R,0,TAU);g.stroke();g.setLineDash([]);
     g.font='10px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle='#fff';g.fillText('size '+Math.round(SZ*100)+'%',x,y+R+14)}
@@ -1673,6 +1748,7 @@ function frame(){
   drawPulses(t);
   const dk=drag&&drag.kind==='wire'?drag:null;
   for(const n of nodes)drawNode(n,t,hv,dk);
+  syncPanels();
   for(const w of wires)if(w.k===CV)drawWire(w,hv,t);
   if(dk){const p=portPos(dk.from,dk.port,true),c=colorOf(dk.from);
     g.strokeStyle=alpha(c,.85);g.setLineDash([5,5]);g.lineWidth=2;g.beginPath();g.moveTo(p.x,p.y);g.bezierCurveTo(p.x+p.nx*80,p.y+p.ny*80,dk.x-60,dk.y,dk.x,dk.y);g.stroke();g.setLineDash([])}
@@ -1689,7 +1765,7 @@ function frame(){
 }
 
 /* ---------- interaction ---------- */
-function setCursor(h){if(drawMode){cv.style.cursor='crosshair';return}const m={toggle:'pointer',btn:'pointer',resize:'nwse-resize',secLabel:'grab',secRim:'nwse-resize',secColor:'pointer',secDel:'pointer',depth:'ns-resize',out:'crosshair',in:'crosshair',step:'pointer',ring:'ns-resize',node:'grab',wire:'pointer',none:'default'};cv.style.cursor=m[h.kind]||'default'}
+function setCursor(h){if(drawMode){cv.style.cursor='crosshair';return}const m={toggle:'pointer',btn:'pointer',plug:'crosshair',resize:'nwse-resize',secLabel:'grab',secRim:'nwse-resize',secColor:'pointer',secDel:'pointer',depth:'ns-resize',out:'crosshair',in:'crosshair',step:'pointer',ring:'ns-resize',node:'grab',wire:'pointer',none:'default'};cv.style.cursor=m[h.kind]||'default'}
 const evW=e=>{const r=cv.getBoundingClientRect();return toW(e.clientX-r.left,e.clientY-r.top)};
 function setParam(n,k,v){
   const T=TYPES[n.type],pd=T.pd[k],mx=pmax(pd,n);
@@ -1716,6 +1792,7 @@ cv.addEventListener('pointerdown',e=>{
   else if(h.kind==='resize'){drag={kind:'resize',n:h.n}}
   else if(h.kind==='toggle'){h.n.p[h.k]=h.n.p[h.k]?0:1;sel=h.n;applyMix();save()}
   else if(h.kind==='btn'){sel=h.n;TYPES[h.n.type].press(h.n,h.i);save()}
+  else if(h.kind==='plug'){sel=h.n;drag={kind:'plug',n:h.n};plugPointer(h.n,'down',wx,wy,e)}
   else if(h.kind==='secColor'){h.s.c=(h.s.c+1)%SEC_COLORS.length;secSel=h.s;save()}
   else if(h.kind==='secDel'){sections=sections.filter(x=>x!==h.s);secSel=null;save()}
   else if(h.kind==='secLabel'){const S=h.s,dbl=lastTap.s===S&&performance.now()-lastTap.t<380;lastTap={s:S,t:performance.now()};secSel=S;sel=null;
@@ -1736,6 +1813,7 @@ cv.addEventListener('pointermove',e=>{
   else if(drag.kind==='depth'){const dy=drag.sy-e.clientY;if(Math.abs(dy)>3)drag.moved=true;const w=drag.w;
     w.depth=Math.max(-1,Math.min(1,Math.round((drag.start+dy/120)*100)/100));if(w.g&&ctx)sm(w.g.gain,w.depth*w.gs)}
   else if(drag.kind==='move'){drag.n.x=wx-drag.dx;drag.n.y=wy-drag.dy}
+  else if(drag.kind==='plug')plugPointer(drag.n,'move',wx,wy,e);
   else if(drag.kind==='resize'){const n=drag.n;n.sz=Math.max(.5,Math.min(2.2,Math.round(Math.hypot(wx-n.x,wy-n.y)/TYPES[n.type].r*100)/100))}
   else if(drag.kind==='secNew'||drag.kind==='secSize'){drag.s.r=Math.max(drag.kind==='secNew'?0:50,Math.hypot(wx-drag.s.x,wy-drag.s.y))}
   else if(drag.kind==='secMove'){const S=drag.s;S.x=wx-drag.dx;S.y=wy-drag.dy;for(const[n,ox,oy]of drag.inside){n.x=S.x+ox;n.y=S.y+oy}for(const[o,ox,oy]of drag.kids){o.x=S.x+ox;o.y=S.y+oy}}
@@ -1746,6 +1824,7 @@ cv.addEventListener('pointermove',e=>{
 });
 cv.addEventListener('pointerup',e=>{
   if(!drag)return;const[wx,wy]=evW(e);
+  if(drag.kind==='plug')plugPointer(drag.n,'up',wx,wy,e);
   if(drag.kind==='secNew'){const S=drag.s;drag=null;setDrawMode(false);
     if(S.r<40){sections=sections.filter(x=>x!==S);flashMsg('Drag outward to draw a section circle')}else{secSel=S;editSection(S)}save();return}
   if(drag.kind==='wire'&&drag.kindOfPort===CV){
@@ -1824,8 +1903,21 @@ rootSel.onchange=()=>{setKey(scaleName,+rootSel.value);save()};
 function centerW(){const lw=rackW();return toW(lw+(W-lw)/2+(Math.random()-.5)*140,H/2+(Math.random()-.5)*140)}
 function addNode(type,p,extra){const[x,y]=centerW();const n=mk(type,x,y,p,extra);sel=n;rewire();save();if(W<=820){rackEl.hidden=true;rackBtn.setAttribute('aria-expanded','false')}return n}
 function item(label,color,fn,wide){const b=document.createElement('button');b.type='button';b.className='item'+(wide?' wide':'');b.style.setProperty('--c',color);b.innerHTML=`<i></i><span></span>`;b.querySelector('span').textContent=label;b.title=label;b.onclick=fn;return b}
-function section(title,els){const h=document.createElement('h3');h.textContent=title;rackEl.appendChild(h);const box=document.createElement('div');box.className='items';els.forEach(e=>box.appendChild(e));rackEl.appendChild(box)}
+function sectionEl(title,els){const h=document.createElement('h3');h.textContent=title;rackEl.appendChild(h);const box=document.createElement('div');box.className='items';els.forEach(e=>box.appendChild(e));rackEl.appendChild(box)}
 const basic=types=>types.map(t=>item(TYPES[t].name,TYPES[t].color,()=>addNode(t)));
+// the samples folder's contents (desktop only), and what clicking one in the Rack does
+let folderSamples=[];
+async function refreshFolderSamples(){try{folderSamples=await window.orreryDesktop.listSamples()}catch(e){folderSamples=[]}buildRack()}
+async function pickFolderSample(rel){
+  const sid=FOLDER+rel;if(!await ensureSample(sid)){flashMsg(`Couldn't read ${rel}. Try a WAV, MP3, OGG or FLAC file.`);return}
+  const target=sel&&(sel.type==='sampler'||sel.type==='cloud')?sel:null,[x,y]=centerW();useSample(sid,x,y,target);
+  if(W<=820){rackEl.hidden=true;rackBtn.setAttribute('aria-expanded','false')}
+}
+// rebuilt whenever plugins load: plugin modules join the section their category names, or get their own after the built-ins
+function buildRack(){
+rackEl.innerHTML='';
+const plugIn=cat=>Object.entries(TYPES).filter(([,T])=>T.plugin&&T.cat===cat).map(([k,T])=>{const b=item(T.name,T.color,()=>addNode(k));b.title=T.name+' · plugin ('+T.plugin.file+')';return b});
+const section=(title,els)=>sectionEl(title,[...els,...plugIn(title)]);
 section('Time',basic(['clock','pulsar','divider','mult']));
 section('Sequence',basic(['sequencer','euclid','turing','marbles','grids']));
 section('Harmony',basic(['key','chord','snap','shift']));
@@ -1841,21 +1933,41 @@ section('Samples',[
   item('Break (loop)','#7ee8ff',()=>addNode('sampler',{mode:2,bars:1},{sid:'builtin:break'})),
   item('Break (slice)','#7ee8ff',()=>addNode('sampler',{mode:3,slices:2},{sid:'builtin:break'})),
 ]);
+// the desktop samples folder: loose files first, then one group per subfolder
+if(window.orreryDesktop){const groups=new Map();
+  for(const rel of folderSamples){const i=rel.indexOf('/'),g=i<0?'':rel.slice(0,i);if(!groups.has(g))groups.set(g,[]);groups.get(g).push(rel)}
+  const it=rel=>{const b=item(sampleName(rel),'#7ee8ff',()=>pickFolderSample(rel));b.title=rel+' · adds a Sampler, or swaps the sound of the selected Sampler or Cloud';return b};
+  sectionEl('Sample folder',[item('Open samples folder','#7ee8ff',()=>window.orreryDesktop.openSamplesFolder(),true),...(groups.get('')||[]).map(it)]);
+  for(const[g,list]of groups){if(!g)continue;const h4=document.createElement('h4');h4.style.setProperty('--c','#7ee8ff');h4.innerHTML='<i></i>';h4.append(g);rackEl.appendChild(h4);
+    const box=document.createElement('div');box.className='items';list.forEach(rel=>box.appendChild(it(rel)));rackEl.appendChild(box)}}
 {const h=document.createElement('h3');h.textContent='Drums';rackEl.appendChild(h);
   PACKS.forEach((pk,pi)=>{const h4=document.createElement('h4');h4.style.setProperty('--c',pk.color);h4.innerHTML='<i></i>';h4.append(pk.name);rackEl.appendChild(h4);
     const box=document.createElement('div');box.className='items';pk.inst.forEach(([nm],ii)=>box.appendChild(item(nm,pk.color,()=>addNode('drum',{pack:pi,inst:ii}))));rackEl.appendChild(box)})}
 section('FX',Object.keys(FX).map(k=>item(FX[k].name,FAM[FX[k].fam],()=>addNode('fx_'+k))));
 section('MIDI',basic(['midiin']));
 section('Out',[item('Speakers / channel',COL.white,()=>addNode('output'))]);
+const builtIn=new Set([...rackEl.querySelectorAll('h3')].map(h=>h.textContent));
+[...new Set(Object.values(TYPES).filter(T=>T.plugin&&!builtIn.has(T.cat)).map(T=>T.cat))].forEach(cat=>sectionEl(cat,plugIn(cat)));
+}
+buildRack();
 rackBtn.onclick=()=>{rackEl.hidden=!rackEl.hidden;rackBtn.setAttribute('aria-expanded',String(!rackEl.hidden))};
 const setBtn=document.getElementById('setBtn'),setPanel=document.getElementById('setPanel'),setOpts=document.getElementById('setOpts');
-function applySettings(){try{localStorage.setItem(SET_KEY,JSON.stringify(setv))}catch(e){}resize();renderSettings()}
-function renderSettings(){setOpts.innerHTML='';
-  SET_UI.forEach(([k,label,choices])=>{const row=document.createElement('label');row.className='opt';const sp=document.createElement('span');sp.textContent=label;
-    if(choices){const s=document.createElement('select');choices.forEach(v=>s.add(new Option(v+' fps',v)));s.value=setv[k];s.onchange=()=>{setv[k]=+s.value;applySettings()};row.append(sp,s)}
+const audOpts=document.getElementById('audOpts'),audStat=document.getElementById('audStat');let setPrev={...setv};
+function applySettings(){try{localStorage.setItem(SET_KEY,JSON.stringify(setv))}catch(e){}resize();renderSettings();
+  // engine mode needs a new audio context; effects quality rebuilds every module's audio
+  if(setv.audio!==setPrev.audio)restartAudio();else if(setv.fx!==setPrev.fx&&ctx){nodes.forEach(killAu);wires.forEach(w=>{w.g=null});rewire()}
+  setPrev={...setv}}
+function renderSettings(){
+  const fill=(box,ui)=>{box.innerHTML='';ui.forEach(([k,label,choices])=>{const row=document.createElement('label');row.className='opt';const sp=document.createElement('span');sp.textContent=label;
+    if(choices){const s=document.createElement('select');choices.forEach(([v,l])=>s.add(new Option(l,v)));s.value=setv[k];s.onchange=()=>{setv[k]=typeof SET_DEF[k]==='number'?+s.value:s.value;applySettings()};row.append(sp,s)}
     else{const c=document.createElement('input');c.type='checkbox';c.checked=!!setv[k];c.onchange=()=>{setv[k]=c.checked;applySettings()};row.append(c,sp)}
-    setOpts.append(row)})}
+    box.append(row)})};
+  fill(setOpts,SET_UI);fill(audOpts,AUD_UI)}
 renderSettings();
+// the panel's audio line: buffer latency and, where the browser reports it, how busy the audio thread is
+setInterval(()=>{if(setPanel.hidden)return;if(!ctx){audStat.textContent='Audio starts when you press Play.';return}
+  const lat=Math.round(((ctx.baseLatency||0)+(ctx.outputLatency||0))*1000);
+  audStat.textContent=`Latency ~${lat} ms · ${ctx.sampleRate/1000} kHz`+(audioLoad?` · load ${Math.round(audioLoad.avg*100)}% (peak ${Math.round(audioLoad.peak*100)}%)`+(audioLoad.under>0?` · ${Math.round(audioLoad.under*100)}% dropouts`:''):'')},500);
 setBtn.onclick=e=>{e.stopPropagation();const open=setPanel.hidden;closePops();if(open){setPanel.hidden=false;setBtn.setAttribute('aria-expanded','true');placePop(setPanel,setBtn)}};
 document.getElementById('setLow').onclick=()=>{setv={...SET_LOW};applySettings()};
 document.getElementById('setDef').onclick=()=>{setv={...SET_DEF};applySettings()};
@@ -1864,7 +1976,7 @@ const demoSong=name=>Object.keys(lib.songs).find(id=>lib.songs[id].demo===name);
 function buildDemo(D,id){lib.cur=id;D.fn();lib.songs[id].data=serialize();lib.cur=null}
 function openDemo(D){flushSave();let id=demoSong(D.name);if(!id){id=addSong(D.name,null);lib.songs[id].demo=D.name;buildDemo(D,id)}openSong(id)}
 const clearBtn=document.getElementById('clear');let clearArm=0;
-clearBtn.onclick=()=>{if(Date.now()-clearArm<3000){nodes.forEach(killAu);nodes=[];wires=[];sections=[];secSel=null;sel=null;save();clearBtn.textContent='Clear';clearArm=0}else{clearArm=Date.now();clearBtn.textContent='Tap again to clear';setTimeout(()=>{clearBtn.textContent='Clear'},3000)}};
+clearBtn.onclick=()=>{if(Date.now()-clearArm<3000){nodes.forEach(killAu);nodes=[];wires=[];orphanWires=[];sections=[];secSel=null;sel=null;save();clearBtn.textContent='Clear';clearArm=0}else{clearArm=Date.now();clearBtn.textContent='Tap again to clear';setTimeout(()=>{clearBtn.textContent='Clear'},3000)}};
 
 /* ---------- song picker ---------- */
 const songSel=document.getElementById('song'),songName=document.getElementById('songName'),songMenu=document.getElementById('songMenu'),songMenuBtn=document.getElementById('songMenuBtn'),songFile=document.getElementById('songFile');
@@ -1889,6 +2001,7 @@ function download(name,text){const a=document.createElement('a');a.href=URL.crea
 async function exportSong(){
   flushSave();const sg=lib.songs[lib.cur],samples={};
   for(const n of nodes){if((n.type!=='sampler'&&n.type!=='cloud')||!n.sid||n.sid.startsWith('builtin:')||samples[n.sid])continue;
+    try{if(n.sid.startsWith(FOLDER)&&desk){samples[n.sid]={name:sampleName(n.sid),b64:b64(await desk.readSample(n.sid.slice(FOLDER.length)))};continue}}catch(e){}
     try{const rec=await idb.get(n.sid);if(rec)samples[n.sid]={name:rec.name,b64:b64(rec.data)}}catch(e){}}
   download(sg.name.replace(/[^\w\- ]+/g,'').trim().replace(/\s+/g,'-')+'.orrery.json',JSON.stringify({format:'orrery-song',version:1,name:sg.name,data:sg.data,samples}));
   flashMsg('Exported. If nothing downloaded, this page is not allowed to save files here: open Orrery on its own site.');
@@ -1975,10 +2088,112 @@ function onMidi(e){
 }
 playBtn.addEventListener('click',e=>{if(midiLearn){e.stopImmediatePropagation();midiArm={k:'play'};flashMsg('Press a key or move a control to map Play / Stop')}},true);
 
+/* ---------- plugins: one .js file each, registering module types through window.Orrery ---------- */
+const plugFiles=new Map(),plugErr=new Map(),plugFailT={};let loadingFile=null;
+// a broken plugin reports itself and carries on; it can never stop the clock, the audio or the drawing
+function plugFail(T,what,e){console.error(`[Orrery plugin ${T.name}] ${what}:`,e);const k=T.name+what;if(performance.now()-(plugFailT[k]||-1e9)>4000){plugFailT[k]=performance.now();flashMsg(`Plugin "${T.name}" failed in ${what}: ${e&&e.message||e}`)}}
+function plugCall(T,what,fn,fallback){try{return fn()}catch(e){plugFail(T,what,e);return fallback}}
+function plugPointer(n,type,wx,wy,e){const T=TYPES[n.type];if(!T||!T.pointerFn)return;const s=n.sz||1;
+  plugCall(T,'onPointer',()=>T.pointerFn(n,{type,x:(wx-n.x)/s,y:(wy-n.y)/s,shift:e.shiftKey,alt:e.altKey,ctrl:e.ctrlKey||e.metaKey}));if(type==='up')save()}
+const KINDS={event:EV,audio:AU,mod:CV};
+function register(def,fromFile){
+  if(!def||typeof def!=='object')throw new Error('register() needs a module definition object');
+  if(!def.id||!/^[\w.-]+$/.test(def.id))throw new Error('a plugin module needs an id made of letters, numbers, - _ or .');
+  const key='plug:'+def.id,file=fromFile||loadingFile||'(console)';
+  const ports=(list,base)=>(list||[]).map((p,i,a)=>({id:String(p.id),tag:p.label,kind:KINDS[p.kind||'event']||EV,a:p.angle??base+(i-(a.length-1)/2)*.55,side:p.side,x:p.x,y:p.y}));
+  const params=(def.params||[]).map(p=>{const min=p.min??0,max=p.max??1,labels=Array.isArray(p.labels)?p.labels:null,step=p.step??(labels?1:(max-min)/100);
+    const fmt=labels?L(labels):typeof p.format==='function'?v=>String(p.format(v)):step>=1?v=>String(v):(min>=0&&max<=1?pct:v=>(+v).toFixed(2));
+    return P(String(p.id),p.label||String(p.id),min,labels?labels.length-1:max,p.value??min,step,fmt,{sat:p.dial==='satellite',hide:p.dial==='hidden',bi:!!p.bipolar,s:p.short||(p.label||String(p.id)).slice(0,5)})});
+  const T={name:String(def.name||def.id),cat:def.category||'Plugins',color:/^#[0-9a-f]{6}$/i.test(def.color||'')?def.color:'#c9f27a',r:def.size||46,glyph:'none',
+    ins:ports(def.inputs,Math.PI),outs:ports(def.outputs,0),params,plugin:{file,def},drawBody:def.drawBody,box:def.shape?{w:+def.shape.width||120,h:+def.shape.height||80}:null};
+  const hasMod=T.outs.some(p=>p.kind===CV);
+  if(def.onEvent)T.on=(n,port,ev,emit)=>plugCall(T,'onEvent',()=>def.onEvent(n,port,ev,(o,e)=>emit(o,{...ev,...e})));
+  if(def.audio||hasMod)T.build=n=>{
+    const a=def.audio?plugCall(T,'audio',()=>def.audio(ctx,n,Orrery))||{}:{},au={...a,inp:a.input,out:a.output};
+    // each mod output gets its own audio-rate signal, so fast dials (cutoff, level) follow every output, not just the first
+    const cs=hasMod?Object.fromEntries(T.outs.filter(p=>p.kind===CV).map(p=>[p.id,csBuild()])):{};
+    if(hasMod){au.sigs=Object.fromEntries(Object.entries(cs).map(([k,c])=>[k,c.sig]));au.sig=a.sig||Object.values(cs)[0].sig;au.css=cs}
+    au.stop=()=>{Object.values(cs).forEach(c=>c.stop());a.stop&&plugCall(T,'stop',()=>a.stop())};if(a.set)au.set=p=>plugCall(T,'set',()=>a.set(p));return au};
+  if(def.modulate){T.modVal=(n,port,t)=>plugCall(T,'modulate',()=>+def.modulate(n,port,t)||0,0);T.cvOut=1}
+  if(def.tick)T.tickMod=(n,t,dt)=>plugCall(T,'tick',()=>def.tick(n,t,dt));
+  if(def.schedule)T.ahead=(n,from,to,out)=>plugCall(T,'schedule',()=>def.schedule(n,from,to,(o,e)=>out(o,e)));
+  if(def.onParam)T.onParam=(n,k)=>plugCall(T,'onParam',()=>def.onParam(n,k));
+  if(def.init)T.init=n=>plugCall(T,'init',()=>def.init(n));
+  if(def.title)T.title=n=>plugCall(T,'title',()=>String(def.title(n)),T.name);
+  if(def.draw)T.draw=(g2,n,t,f)=>def.draw(g2,n,t,{flash:f,color:colorOf(n),selected:sel===n,width:T.box?T.box.w:T.r*2,height:T.box?T.box.h:T.r*2,radius:T.r});
+  if(def.onPointer){T.pointer=1;T.pointerFn=def.onPointer;if(def.pointerArea)T.pointerHit=(n,x,y)=>plugCall(T,'pointerArea',()=>!!def.pointerArea(n,x,y),false)}
+  if(def.buttons){T.btns=n=>(plugCall(T,'buttons',()=>typeof def.buttons==='function'?def.buttons(n):def.buttons,[])||[]).map(q=>({l:String(q.label||''),dx:+q.x||0,dy:+q.y||0,r:q.r||9,on:!!(typeof q.on==='function'?q.on(n):q.on),col:q.color}));
+    T.press=(n,i)=>plugCall(T,'onButton',()=>def.onButton&&def.onButton(n,i))}
+  if(def.panel&&typeof def.panel.mount==='function')T.panel={w:def.panel.width||160,h:def.panel.height||100,x:def.panel.x||0,y:def.panel.y||0,mount:def.panel.mount,unmount:def.panel.unmount};
+  prepType(T);TYPES[key]=T;if(plugFiles.has(file))plugFiles.get(file).push(key);else plugFiles.set(file,[key]);
+  return key;
+}
+// the API a plugin sees, as window.Orrery and as the third argument of audio()
+const Orrery=window.Orrery={version:1,register:def=>register(def),
+  get audio(){return ctx},get bpm(){return bpm},get playing(){return playing},
+  get key(){return{root,scale:scaleName,notes:SCALES[scaleName].slice()}},
+  now:()=>now(),beat:()=>60/bpm,sixteenth,
+  degreeToMidi:(deg,base=48)=>base+root+degToSemi(deg),midiToFreq:mtof,
+  snap:(deg,tones='triad',chordRoot=0)=>{const i=SNAP_SETS.findIndex(s=>s.l===tones);return snapDeg(deg,i<0?0:i,chordRoot,0)},
+  noiseBuffer:()=>noiseBuf,trail:(n,t,midi,dur)=>addNote(n,t,midi,dur||.3),envelope:(n,t,level,attack,decay)=>voiceEnv(n,t,level,attack,decay),
+  message:s=>flashMsg(String(s)),save:()=>save(),alpha};
+// HTML panels float over the canvas and follow their module as you pan and zoom
+const panelLayer=document.getElementById('panels'),panelEls=new Map();
+function syncPanels(){
+  for(const[n,el]of panelEls)if(!nodes.includes(n)||TYPES[n.type].panel!==el.P){const P=el.P;if(P&&P.unmount)plugCall(TYPES[n.type]||{name:'?'},'panel.unmount',()=>P.unmount(el,n));el.remove();panelEls.delete(n)}
+  for(const n of nodes){const T=TYPES[n.type],P=T.panel;if(!P)continue;let el=panelEls.get(n);
+    if(!el){el=document.createElement('div');el.className='plugPanel';el.P=P;el.style.width=P.w+'px';el.style.height=P.h+'px';panelLayer.append(el);panelEls.set(n,el);plugCall(T,'panel.mount',()=>P.mount(el,n,Orrery))}
+    const s=view.s*(n.sz||1);el.style.transform=`translate(${view.x+(n.x+(P.x-P.w/2)*(n.sz||1))*view.s}px,${view.y+(n.y+(P.y-P.h/2)*(n.sz||1))*view.s}px) scale(${s})`}
+}
+// load (or reload) one plugin file: whatever it registered last time is replaced
+// types a plugin no longer provides are only dropped in pluginsChanged, after the song is saved, so nothing on screen loses its type mid-frame
+const plugDrop=new Set();
+async function loadPluginSource(file,code){
+  (plugFiles.get(file)||[]).forEach(k=>plugDrop.add(k));plugFiles.set(file,[]);plugErr.delete(file);loadingFile=file;
+  const url=URL.createObjectURL(new Blob([code],{type:'text/javascript'}));
+  try{const mod=await import(url),d=mod.default;(Array.isArray(d)?d:d?[d]:[]).forEach(x=>register(x,file))}
+  catch(e){plugErr.set(file,e.message||String(e));console.error(`[Orrery] plugin ${file}:`,e)}
+  finally{loadingFile=null;URL.revokeObjectURL(url)}
+}
+function forgetPlugin(file){(plugFiles.get(file)||[]).forEach(k=>plugDrop.add(k));plugFiles.delete(file);plugErr.delete(file)}
+// after plugins change: save, drop stale types, rebuild the Rack and reload the open song in place,
+// so modules pick up new code, and placeholders turn back into modules when their plugin returns
+function pluginsChanged(){
+  const live=new Set([...plugFiles.values()].flat()),open=lib.cur&&lib.songs[lib.cur];if(open)flushSave();
+  for(const k of plugDrop)if(!live.has(k))delete TYPES[k];plugDrop.clear();
+  buildRack();renderPlugins();if(!open)return;const v={...view};applyPatch(lib.songs[lib.cur].data);rewire();Object.assign(view,v);loadSamples()}
+// where plugin files come from: the desktop app's plugins folder, or (in a browser) files you add, kept in this browser
+const desk=window.orreryDesktop||null,WEB_PLUG='orrery-plugins-v1';
+const webPlugs=()=>{try{return JSON.parse(localStorage.getItem(WEB_PLUG)||'{}')}catch(e){return{}}};
+async function listPlugins(){if(desk)return await desk.listPlugins();return Object.entries(webPlugs()).map(([file,code])=>({file,code}))}
+const plugCode=new Map();
+// one reload at a time: the folder watcher, Reload and Add can overlap, and loads must not interleave
+let plugQueue=Promise.resolve();
+function refreshPlugins(){const p=plugQueue.then(async()=>{const c=await syncPlugins();if(c)pluginsChanged();return c});plugQueue=p.catch(e=>console.error(e));return p}
+async function syncPlugins(){
+  const list=await listPlugins(),seen=new Set();let changed=false;
+  for(const{file,code}of list){seen.add(file);if(plugCode.get(file)===code)continue;plugCode.set(file,code);await loadPluginSource(file,code);changed=true}
+  for(const file of[...plugCode.keys()])if(!seen.has(file)){plugCode.delete(file);forgetPlugin(file);changed=true}
+  return changed;
+}
+const plugList=document.getElementById('plugList');
+function renderPlugins(){plugList.innerHTML='';
+  if(!plugCode.size){const li=document.createElement('li');li.textContent=desk?'No plugins yet. Drop .js files into the plugins folder.':'No plugins yet.';plugList.append(li);return}
+  for(const file of plugCode.keys()){const li=document.createElement('li'),sp=document.createElement('span'),err=plugErr.get(file),types=(plugFiles.get(file)||[]).map(k=>TYPES[k]&&TYPES[k].name).filter(Boolean);
+    sp.textContent=file+(err?' · error: '+err:' · '+(types.join(', ')||'no modules'));sp.title=sp.textContent;if(err)sp.style.color='#ff8fa3';li.append(sp);
+    if(!desk){const b=document.createElement('button');b.type='button';b.textContent='remove';b.onclick=async()=>{const all=webPlugs();delete all[file];localStorage.setItem(WEB_PLUG,JSON.stringify(all));refreshPlugins()};li.append(b)}
+    plugList.append(li)}}
+const plugAdd=document.getElementById('plugAdd'),plugFileIn=document.getElementById('plugFile');
+if(desk){plugAdd.textContent='Open plugins folder';plugAdd.onclick=()=>desk.openPluginsFolder();desk.onPluginsChanged(()=>refreshPlugins())}
+else{plugAdd.onclick=()=>plugFileIn.click();plugFileIn.onchange=async()=>{const all=webPlugs();for(const f of plugFileIn.files)all[f.name]=await f.text();plugFileIn.value='';
+  try{localStorage.setItem(WEB_PLUG,JSON.stringify(all))}catch(e){flashMsg('Browser storage is full.')}refreshPlugins()}}
+document.getElementById('plugReload').onclick=()=>{plugQueue=plugQueue.then(()=>{plugCode.clear();for(const f of[...plugFiles.keys()])forgetPlugin(f)});refreshPlugins().then(()=>flashMsg('Plugins reloaded'))};
+
 /* ---------- boot ---------- */
 resize();builtins();
 if(window.innerWidth<=820){rackEl.hidden=true;rackBtn.setAttribute('aria-expanded','false')}
-bootSongs();
+// plugins load before the first song opens, so its plugin modules come up as themselves rather than placeholders
+plugQueue=syncPlugins().catch(e=>console.error(e)).then(async()=>{if(desk){await refreshFolderSamples();desk.onSamplesChanged(refreshFolderSamples)}buildRack();renderPlugins();bootSongs()});
 window.addEventListener('resize',()=>{resize();fit()});
 requestAnimationFrame(frame);
 })();

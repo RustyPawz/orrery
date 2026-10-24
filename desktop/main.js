@@ -1,0 +1,180 @@
+// Orrery desktop: the same index.html as the website, in its own window, with a plugins folder it watches.
+const { app, BrowserWindow, ipcMain, shell, Menu, session } = require('electron');
+const path = require('path');
+const fs = require('fs');
+
+// keep the audio scheduler at full speed even when the window is hidden or minimised
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+
+if (!app.requestSingleInstanceLock()) app.quit();
+
+let win = null;
+let pluginsDir = '';
+let samplesDir = '';
+const AUDIO_EXT = /\.(wav|wave|mp3|ogg|oga|flac|m4a|aac|aif|aiff|opus|webm)$/i;
+const bundled = path.join(__dirname, '..', 'plugins');
+
+// first run: make the plugins folder and put the example plugins and a short readme in it
+function preparePluginsDir() {
+  pluginsDir = path.join(app.getPath('documents'), 'Orrery', 'plugins');
+  const fresh = !fs.existsSync(pluginsDir);
+  fs.mkdirSync(pluginsDir, { recursive: true });
+  if (!fresh) return;
+  for (const f of fs.readdirSync(bundled)) {
+    try { fs.copyFileSync(path.join(bundled, f), path.join(pluginsDir, f)); } catch (e) { /* an example that won't copy is skipped */ }
+  }
+}
+
+// the samples folder: any audio inside it (subfolders too) shows up in Orrery's Rack
+function prepareSamplesDir() {
+  samplesDir = path.join(app.getPath('documents'), 'Orrery', 'samples');
+  fs.mkdirSync(samplesDir, { recursive: true });
+}
+
+// a path from the page must stay inside the samples folder
+function insideSamples(rel) {
+  const full = path.resolve(samplesDir, String(rel));
+  return full.startsWith(path.resolve(samplesDir) + path.sep) ? full : null;
+}
+
+function listSamples() {
+  const out = [];
+  const walk = (dir, depth) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      const full = path.join(dir, e.name);
+      if (e.isDirectory() && depth < 4) walk(full, depth + 1);
+      else if (e.isFile() && AUDIO_EXT.test(e.name)) out.push(path.relative(samplesDir, full).split(path.sep).join('/'));
+    }
+  };
+  walk(samplesDir, 0);
+  return out.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+function readSample(rel) {
+  const full = insideSamples(rel);
+  if (!full) throw new Error('not in the samples folder');
+  return fs.readFileSync(full);
+}
+
+// imported audio is kept in samples/Imported, never overwriting a file already there
+function saveSample(name, bytes) {
+  const dir = path.join(samplesDir, 'Imported');
+  fs.mkdirSync(dir, { recursive: true });
+  const clean = String(name).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 120) || 'sample.wav';
+  const ext = path.extname(clean), base = clean.slice(0, clean.length - ext.length);
+  let file = clean;
+  for (let i = 2; fs.existsSync(path.join(dir, file)); i++) file = `${base} ${i}${ext}`;
+  fs.writeFileSync(path.join(dir, file), Buffer.from(bytes));
+  return 'Imported/' + file;
+}
+
+function listPlugins() {
+  try {
+    return fs.readdirSync(pluginsDir)
+      .filter(f => f.toLowerCase().endsWith('.js'))
+      .sort()
+      .map(file => ({ file, code: fs.readFileSync(path.join(pluginsDir, file), 'utf8') }));
+  } catch (e) {
+    return [];
+  }
+}
+
+// editors often write a file in several steps, so wait for the folder to settle before telling the page
+let watchTimer = null;
+function watchPlugins() {
+  try {
+    fs.watch(pluginsDir, () => {
+      clearTimeout(watchTimer);
+      watchTimer = setTimeout(() => win && win.webContents.send('plugins:changed'), 250);
+    });
+  } catch (e) { /* no watching on this system: Reload plugins still works */ }
+}
+
+let sampleTimer = null;
+function watchSamples() {
+  const ping = () => { clearTimeout(sampleTimer); sampleTimer = setTimeout(() => win && win.webContents.send('samples:changed'), 400); };
+  try { fs.watch(samplesDir, { recursive: true }, ping); }
+  catch (e) { try { fs.watch(samplesDir, ping); } catch (e2) { /* no watching: the list refreshes on restart */ } }
+}
+
+const stateFile = () => path.join(app.getPath('userData'), 'window.json');
+function loadBounds() {
+  try { return JSON.parse(fs.readFileSync(stateFile(), 'utf8')); } catch (e) { return { width: 1440, height: 900 }; }
+}
+function saveBounds() {
+  if (!win || win.isMinimized()) return;
+  try { fs.writeFileSync(stateFile(), JSON.stringify({ ...win.getNormalBounds(), maximized: win.isMaximized() })); } catch (e) { /* not fatal */ }
+}
+
+function createWindow() {
+  const b = loadBounds();
+  win = new BrowserWindow({
+    x: b.x, y: b.y, width: b.width || 1440, height: b.height || 900, minWidth: 720, minHeight: 480,
+    backgroundColor: '#0a0614', title: 'Orrery', show: false,
+    icon: path.join(__dirname, 'icon.png'),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true, nodeIntegration: false, sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  if (b.maximized) win.maximize();
+  win.once('ready-to-show', () => win.show());
+  win.on('close', saveBounds);
+  // links like "by RedtailWorks" open in the real browser, not in an Orrery window
+  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  win.loadFile(path.join(__dirname, '..', 'index.html'));
+}
+
+function buildMenu() {
+  const send = ch => () => win && win.webContents.send(ch);
+  const template = [
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { label: 'File', submenu: [
+      { label: 'Open Samples Folder', click: () => shell.openPath(samplesDir) },
+      { label: 'Open Plugins Folder', click: () => shell.openPath(pluginsDir) },
+      { label: 'Reload Plugins', accelerator: 'CmdOrCtrl+Shift+R', click: send('plugins:changed') },
+      { type: 'separator' },
+      process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' },
+    ] },
+    { role: 'editMenu' },
+    { label: 'View', submenu: [
+      { role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' },
+      { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' }, { role: 'togglefullscreen' },
+    ] },
+    { role: 'help', submenu: [
+      { label: 'Making Plugins', click: () => shell.openExternal('https://github.com/RustyPawz/orrery/blob/main/PLUGINS.md') },
+      { label: 'Orrery on the Web', click: () => shell.openExternal('https://rustypawz.github.io/orrery/') },
+    ] },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+ipcMain.handle('plugins:list', () => listPlugins());
+ipcMain.handle('plugins:open', () => shell.openPath(pluginsDir));
+ipcMain.handle('plugins:path', () => pluginsDir);
+ipcMain.handle('samples:list', () => listSamples());
+ipcMain.handle('samples:read', (e, rel) => readSample(rel));
+ipcMain.handle('samples:save', (e, name, bytes) => saveSample(name, bytes));
+ipcMain.handle('samples:open', () => shell.openPath(samplesDir));
+
+app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+app.whenReady().then(() => {
+  // Web MIDI (and its SysEx messages) for controllers; nothing else needs a permission
+  const allowed = new Set(['midi', 'midiSysex']);
+  session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb(allowed.has(perm)));
+  session.defaultSession.setPermissionCheckHandler((wc, perm) => allowed.has(perm));
+  preparePluginsDir();
+  prepareSamplesDir();
+  watchPlugins();
+  watchSamples();
+  buildMenu();
+  createWindow();
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
