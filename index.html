@@ -74,6 +74,10 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 .pop .row button{text-align:center}
 .pop .st{color:var(--fg);font-size:11.5px;margin:0}
 .pop .mon{font-variant-numeric:tabular-nums;color:#ffd25a}
+.pop .opt{display:flex;align-items:center;gap:9px;font-size:11.5px;padding:5px 2px;cursor:pointer}
+.pop .opt input{appearance:auto;width:15px;height:15px;margin:0;padding:0;accent-color:var(--lime);flex:none}
+.pop .opt select{margin-left:auto;padding:3px 9px}
+#setBtn[aria-expanded="true"]{border-color:var(--lime);color:var(--lime)}
 .pop ul{list-style:none;margin:0;padding:0;max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:3px}
 .pop li{display:flex;align-items:center;gap:6px;font-size:11px;background:var(--panel-2);border-radius:6px;padding:4px 4px 4px 8px}
 .pop li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -119,8 +123,8 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
     <button id="midiBtn" type="button" aria-expanded="false" aria-controls="midiPanel">MIDI</button>
     <button id="rackBtn" type="button" aria-expanded="true" aria-controls="rack">Rack</button>
     <button id="secBtn" type="button" aria-pressed="false" title="Draw a labelled circle around part of the patch">◯ Section</button>
-    <button id="demo" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="demoMenu">Load demo</button>
     <button id="clear" type="button">Clear</button>
+    <button id="setBtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="setPanel" title="Display and performance settings">Settings</button>
   </div>
 </header>
 <div id="stage">
@@ -136,10 +140,16 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
     <button type="button" data-act="rename">Rename</button>
     <button type="button" data-act="export">Export song file</button>
     <button type="button" data-act="import">Import song file…</button>
+    <button type="button" data-act="reset" hidden>Reset demo to original</button>
     <button type="button" data-act="del" class="danger">Delete song</button>
-    <p>Songs save automatically in this browser. Export a file to move a song to another computer; imported audio travels inside it.</p>
+    <p>Songs save automatically in this browser. Export a file to move a song to another computer; imported audio travels inside it. The demos are in the song list too: edit them freely, and reset one here to get the original back.</p>
   </div>
-  <div class="pop" id="demoMenu" hidden></div>
+  <div class="pop" id="setPanel" hidden>
+    <p class="st">Display &amp; performance</p>
+    <div id="setOpts"></div>
+    <div class="row"><button type="button" id="setLow">Low-power preset</button><button type="button" id="setDef">Restore defaults</button></div>
+    <p>These only change what's drawn, never the music. Turning effects off or lowering the frame rate saves CPU and battery. Saved in this browser.</p>
+  </div>
   <div class="pop midi" id="midiPanel" hidden>
     <p class="st" id="midiStatus">Not connected.</p>
     <div class="row"><button type="button" id="midiConnect">Connect MIDI</button><button type="button" id="midiLearn" aria-pressed="false">Learn</button></div>
@@ -1067,8 +1077,10 @@ function bootSongs(){
   if(!Object.keys(lib.songs).length){
     let old=null;try{old=JSON.parse(localStorage.getItem(OLD)||'null')}catch(e){}
     if(old&&old.nodes&&old.nodes.length)lib.cur=addSong('My patch',old);
-    else{lib.cur=addSong('Crypt (demo)',null);demo();lib.songs[lib.cur].data=serialize()}
+    else{lib.cur=addSong('Crypt',null);lib.songs[lib.cur].demo='Crypt';demo();lib.songs[lib.cur].data=serialize()}
   }
+  // songs from before demos joined the list: the first "<Demo> (demo)" of each becomes that demo's song
+  for(const D of DEMOS)if(!demoSong(D.name)){const id=Object.keys(lib.songs).find(k=>lib.songs[k].name===D.name+' (demo)');if(id)lib.songs[id].demo=D.name}
   if(!lib.songs[lib.cur])lib.cur=Object.entries(lib.songs).sort((a,b)=>b[1].t-a[1].t)[0][0];
   const id=lib.cur;lib.cur=null;openSong(id);
 }
@@ -1298,12 +1310,21 @@ const DEMOS=[
   {name:'Xenoflora',what:'alien soundscape · 72 bpm',fn:demoXenoflora},
 ];
 
+/* ---------- display settings (per browser, never per song) ---------- */
+const SET_KEY='orrery-settings-v1',calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const SET_DEF={pulses:!calm,wireAnim:!calm,glow:true,trail:true,backdrop:true,sharp:true,fps:60};
+const SET_LOW={pulses:false,wireAnim:false,glow:false,trail:false,backdrop:false,sharp:false,fps:30};
+const SET_UI=[['pulses','Moving pulses on wires'],['wireAnim','Crawling wire and outline dashes'],['glow','Glow around firing modules'],['trail','Note trail behind the patch'],
+  ['backdrop','Background grid and halo'],['sharp','Sharp graphics on high-res screens'],['fps','Frame rate',[60,30,15]]];
+let setv={...SET_DEF};try{Object.assign(setv,JSON.parse(localStorage.getItem(SET_KEY)||'{}'))}catch(e){}
+const dashT=t=>setv.wireAnim?t:0,glowB=v=>setv.glow?v:0;
+
 /* ---------- geometry ---------- */
 const cv=document.getElementById('cv'),g=cv.getContext('2d');
 let W=0,H=0,dpr=1;const view={x:0,y:0,s:1};
 const rackEl=document.getElementById('rack'),rackBtn=document.getElementById('rackBtn');
 const rackW=()=>(!rackEl.hidden&&W>820)?rackEl.offsetWidth:0;
-function resize(){dpr=Math.min(window.devicePixelRatio||1,2);W=cv.clientWidth;H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr}
+function resize(){dpr=setv.sharp?Math.min(window.devicePixelRatio||1,2):1;W=cv.clientWidth;H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr}
 function fit(){
   if(!nodes.length&&!sections.length){view.x=W/2;view.y=H/2;view.s=1;return}
   let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity;
@@ -1372,11 +1393,14 @@ let meter=0;
 function drawBG(t){
   g.fillStyle='#0a0614';g.fillRect(0,0,W,H);
   const cx=W/2,cy=H/2,R=Math.min(W,H)*.47;
-  const rg=g.createRadialGradient(cx,cy,R*.1,cx,cy,R*1.25);rg.addColorStop(0,`rgba(${40+meter*40},20,${70+meter*30},.55)`);rg.addColorStop(1,'rgba(10,6,20,0)');
-  g.fillStyle=rg;g.fillRect(0,0,W,H);
-  g.strokeStyle='rgba(120,90,200,.07)';g.lineWidth=1;
-  for(let x=(view.x%56+56)%56;x<W;x+=56){g.beginPath();g.moveTo(x+.5,0);g.lineTo(x+.5,H);g.stroke()}
-  g.strokeStyle=`rgba(150,120,230,${.1+meter*.25})`;g.beginPath();g.arc(cx,cy,R,0,TAU);g.stroke();
+  if(setv.backdrop){
+    const rg=g.createRadialGradient(cx,cy,R*.1,cx,cy,R*1.25);rg.addColorStop(0,`rgba(${40+meter*40},20,${70+meter*30},.55)`);rg.addColorStop(1,'rgba(10,6,20,0)');
+    g.fillStyle=rg;g.fillRect(0,0,W,H);
+    g.strokeStyle='rgba(120,90,200,.07)';g.lineWidth=1;
+    for(let x=(view.x%56+56)%56;x<W;x+=56){g.beginPath();g.moveTo(x+.5,0);g.lineTo(x+.5,H);g.stroke()}
+    g.strokeStyle=`rgba(150,120,230,${.1+meter*.25})`;g.beginPath();g.arc(cx,cy,R,0,TAU);g.stroke();
+  }
+  if(!setv.trail)return;
   const pps=70;
   for(const nt of notes){const x=W-40-(t-nt.t)*pps;if(x<-200||nt.t>t)continue;
     const y=H*.86-(nt.midi-24)/(100-24)*H*.74,w=Math.max(6,nt.dur*pps*.6);
@@ -1399,7 +1423,7 @@ function modDot(n,k,x,y,r,t){
   if(!modIndex.has(n.id+':'+k))return;const pd=TYPES[n.type].pd[k],mx=pmax(pd,n);
   let v=n.p[k];for(const w of modIndex.get(n.id+':'+k)){const s=byId(w.a);if(s)v+=w.depth*(mx-pd.min)*srcVal(s,w.ao,t)}
   const fr=Math.min(1,Math.max(0,(v-pd.min)/(mx-pd.min))),a=.75*Math.PI+1.5*Math.PI*fr;
-  g.fillStyle='#ffffff';g.shadowColor=MODC.lfo;g.shadowBlur=8;g.beginPath();g.arc(x+Math.cos(a)*r,y+Math.sin(a)*r,2.6,0,TAU);g.fill();g.shadowBlur=0;
+  g.fillStyle='#ffffff';g.shadowColor=MODC.lfo;g.shadowBlur=glowB(8);g.beginPath();g.arc(x+Math.cos(a)*r,y+Math.sin(a)*r,2.6,0,TAU);g.fill();g.shadowBlur=0;
 }
 function tgtPos(n,k){
   const T=TYPES[n.type],i=T.ringKeys.indexOf(k);
@@ -1489,10 +1513,10 @@ function drawNode(n,t,hv,dragKind){
   // body
   const bg=g.createRadialGradient(x,y,R*.2,x,y,R);bg.addColorStop(0,'#1c1236');bg.addColorStop(1,'#110a20');
   g.fillStyle=bg;g.beginPath();g.arc(x,y,R,0,TAU);g.fill();
-  if(f>0){g.save();g.shadowColor=c;g.shadowBlur=22*f}
+  if(f>0){g.save();g.shadowColor=c;g.shadowBlur=glowB(22*f)}
   g.strokeStyle=alpha(c,.55+f*.45);g.lineWidth=2+f*1.5;g.beginPath();g.arc(x,y,R,0,TAU);g.stroke();
   if(f>0)g.restore();
-  if(sel===n){g.save();g.setLineDash([3,6]);g.lineDashOffset=-t*12;g.strokeStyle=alpha(c,.6);g.lineWidth=1;g.beginPath();g.arc(x,y,R+4+o*2,0,TAU);g.stroke();g.restore()}
+  if(sel===n){g.save();g.setLineDash([3,6]);g.lineDashOffset=-dashT(t)*12;g.strokeStyle=alpha(c,.6);g.lineWidth=1;g.beginPath();g.arc(x,y,R+4+o*2,0,TAU);g.stroke();g.restore()}
   const cvDrag=dragKind&&dragKind.kindOfPort===CV&&n.ui.f;
   T.ringKeys.forEach((k,i)=>{const active=(hv&&hv.n===n&&hv.k===k)||(cvDrag&&hover&&hover.n===n&&hover.k===k);arcVal(x,y,ringR(T,i),fracOf(n,T.pd[k]),alpha(c,active?1:.78),active?6:4.5,T.pd[k].bi);modDot(n,k,x,y,ringR(T,i),t);midiMark(n,k,x,y,ringR(T,i),t)});
   if(n.type==='sequencer')drawSeq(n,t,c);
@@ -1577,7 +1601,7 @@ function drawSampler(n,t,c){
 function drawSections(t){
   for(const S of sections){const c=SEC_COLORS[S.c%SEC_COLORS.length],on=S===secSel,rimHot=(hover&&hover.s===S&&hover.kind==='secRim')||(drag&&drag.s===S&&drag.kind==='secSize');
     g.fillStyle=alpha(c,on?.07:.045);g.beginPath();g.arc(S.x,S.y,S.r,0,TAU);g.fill();
-    g.setLineDash([6,8]);g.lineDashOffset=on?-t*10:0;g.strokeStyle=alpha(c,rimHot?.95:on?.75:.35);g.lineWidth=rimHot?3:on?2:1.4;g.stroke();g.setLineDash([]);
+    g.setLineDash([6,8]);g.lineDashOffset=on?-dashT(t)*10:0;g.strokeStyle=alpha(c,rimHot?.95:on?.75:.35);g.lineWidth=rimHot?3:on?2:1.4;g.stroke();g.setLineDash([]);
     g.font='11px "Michroma","Eurostile",sans-serif';const label=(S.name||'Section').toUpperCase();S.lw=g.measureText(label).width+label.length*1.2;
     const P=secPill(S),rr=P.h/2;
     g.fillStyle='#120a22';g.strokeStyle=alpha(c,on?.9:.55);g.lineWidth=1.2;g.beginPath();
@@ -1595,7 +1619,7 @@ function drawWire(w,hv,t){
   g.lineCap='round';
   if(w.k===CV){
     const v=Math.min(1,Math.abs(srcVal(A,w.ao,t)));
-    g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.25+v*.6);g.lineWidth=1.4+v*1.6;g.setLineDash([2,5]);g.lineDashOffset=-t*20;
+    g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.25+v*.6);g.lineWidth=1.4+v*1.6;g.setLineDash([2,5]);g.lineDashOffset=-dashT(t)*20;
     g.beginPath();g.moveTo(b[0],b[1]);g.bezierCurveTo(b[2],b[3],b[4],b[5],b[6],b[7]);g.stroke();g.setLineDash([]);
     const[mx,my]=bAt(b,.5),act=(drag&&drag.kind==='depth'&&drag.w===w)||(hover&&hover.kind==='depth'&&hover.w===w);
     g.fillStyle='#120a22';g.beginPath();g.arc(mx,my,8,0,TAU);g.fill();g.strokeStyle=alpha(ca,.35);g.lineWidth=1;g.stroke();
@@ -1605,13 +1629,13 @@ function drawWire(w,hv,t){
   }
   if(w.k===AU){
     g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.18);g.lineWidth=7;g.beginPath();g.moveTo(b[0],b[1]);g.bezierCurveTo(b[2],b[3],b[4],b[5],b[6],b[7]);g.stroke();
-    g.strokeStyle=hot?'rgba(255,120,140,.9)':gr;g.lineWidth=2.4;g.setLineDash([7,6]);g.lineDashOffset=-t*40;
+    g.strokeStyle=hot?'rgba(255,120,140,.9)':gr;g.lineWidth=2.4;g.setLineDash([7,6]);g.lineDashOffset=-dashT(t)*40;
     g.beginPath();g.moveTo(b[0],b[1]);g.bezierCurveTo(b[2],b[3],b[4],b[5],b[6],b[7]);g.stroke();g.setLineDash([]);
   }else if(A.type==='switcher'&&w.ao==='out'){
     // ghost wires: faint and dashed until the switcher makes one live
     const gw=ghostWires(A),i=gw.indexOf(w),live=i===swAt(A,t)%gw.length,f=flashOf(A,t);
-    if(live){g.save();g.shadowColor=ca;g.shadowBlur=10+f*14;g.strokeStyle=hot?'rgba(255,120,140,.9)':gr;g.lineWidth=hot?3.2:2.6}
-    else{g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.2);g.lineWidth=hot?2.4:1.4;g.setLineDash([2,7]);g.lineDashOffset=-t*6}
+    if(live){g.save();g.shadowColor=ca;g.shadowBlur=glowB(10+f*14);g.strokeStyle=hot?'rgba(255,120,140,.9)':gr;g.lineWidth=hot?3.2:2.6}
+    else{g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.2);g.lineWidth=hot?2.4:1.4;g.setLineDash([2,7]);g.lineDashOffset=-dashT(t)*6}
     g.beginPath();g.moveTo(b[0],b[1]);g.bezierCurveTo(b[2],b[3],b[4],b[5],b[6],b[7]);g.stroke();g.setLineDash([]);if(live)g.restore();
     const[gx,gy]=bAt(b,.8);g.fillStyle=live?ca:'#120a22';g.strokeStyle=alpha(ca,live?1:.4);g.lineWidth=1.2;g.beginPath();g.arc(gx,gy,6.5,0,TAU);g.fill();g.stroke();
     g.font='500 8px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=live?'#120a22':alpha(ca,.6);g.fillText(String(i+1),gx,gy+3);
@@ -1624,6 +1648,7 @@ function drawWire(w,hv,t){
 }
 const PDUR=.17;
 function drawPulses(t){
+  if(!setv.pulses)return;
   const wm=new Map(wires.map(w=>[w.id,w]));
   for(const p of pulses){const u=(t-p.t)/PDUR;if(u<0||u>1)continue;const w=wm.get(p.w);if(!w)continue;const b=bez(w);if(!b)continue;
     const c=colorOf(byId(w.a));
@@ -1632,9 +1657,12 @@ function drawPulses(t){
 }
 let drag=null,hover=null,msg=null;
 function flashMsg(s){msg={s,t:performance.now()}}
+let lastDraw=0;
 function frame(){
+  // below 60 fps, skip animation frames until the next draw is due
+  const pn=performance.now();if(setv.fps<60&&pn-lastDraw<1000/setv.fps-4){requestAnimationFrame(frame);return}lastDraw=pn;
   const t=now();
-  if(ana&&playing){ana.getFloatTimeDomainData(anaBuf);let s=0;for(let i=0;i<anaBuf.length;i++)s+=anaBuf[i]*anaBuf[i];meter+=(Math.min(1,Math.sqrt(s/anaBuf.length)*3)-meter)*.25}else meter*=.9;
+  if(ana&&playing&&setv.backdrop){ana.getFloatTimeDomainData(anaBuf);let s=0;for(let i=0;i<anaBuf.length;i++)s+=anaBuf[i]*anaBuf[i];meter+=(Math.min(1,Math.sqrt(s/anaBuf.length)*3)-meter)*.25}else meter*=.9;
   if(!isFinite(meter))meter=0;
   g.setTransform(dpr,0,0,dpr,0,0);drawBG(t);
   g.setTransform(dpr*view.s,0,0,dpr*view.s,dpr*view.x,dpr*view.y);
@@ -1795,47 +1823,62 @@ scaleSel.onchange=()=>{setKey(scaleSel.value,root);save()};
 rootSel.onchange=()=>{setKey(scaleName,+rootSel.value);save()};
 function centerW(){const lw=rackW();return toW(lw+(W-lw)/2+(Math.random()-.5)*140,H/2+(Math.random()-.5)*140)}
 function addNode(type,p,extra){const[x,y]=centerW();const n=mk(type,x,y,p,extra);sel=n;rewire();save();if(W<=820){rackEl.hidden=true;rackBtn.setAttribute('aria-expanded','false')}return n}
-function item(label,color,fn,wide){const b=document.createElement('button');b.type='button';b.className='item'+(wide?' wide':'');b.style.setProperty('--c',color);b.innerHTML=`<i></i><span></span>`;b.querySelector('span').textContent=label;b.onclick=fn;return b}
-function section(title,els,note){const h=document.createElement('h3');h.textContent=title;rackEl.appendChild(h);const box=document.createElement('div');box.className='items';els.forEach(e=>box.appendChild(e));rackEl.appendChild(box);if(note){const p=document.createElement('p');p.textContent=note;rackEl.appendChild(p)}}
+function item(label,color,fn,wide){const b=document.createElement('button');b.type='button';b.className='item'+(wide?' wide':'');b.style.setProperty('--c',color);b.innerHTML=`<i></i><span></span>`;b.querySelector('span').textContent=label;b.title=label;b.onclick=fn;return b}
+function section(title,els){const h=document.createElement('h3');h.textContent=title;rackEl.appendChild(h);const box=document.createElement('div');box.className='items';els.forEach(e=>box.appendChild(e));rackEl.appendChild(box)}
 const basic=types=>types.map(t=>item(TYPES[t].name,TYPES[t].color,()=>addNode(t)));
-section('Time',basic(['clock','pulsar','divider','mult']),'Clock is the master: ×4 ×3 ×2 ×1 ÷2 ÷4 ÷8 outputs, plus swing. Clock Mult multiplies any pulse it is fed.');
-section('Sequence',basic(['sequencer','euclid','turing','marbles','grids']),'Turing loops a random melody you can lock or let mutate. Marbles rolls notes from a bell curve and can replay them (déjà vu). Grids morphs between drum patterns.');
-section('Harmony',basic(['key','chord','snap','shift']),'Key sets scale and root for the whole rack. Chord turns one note into chords, progressions or arps. Snap bends notes onto chord tones, following a progression if you like.');
-section('Logic',basic(['chance','walker','repeater','switcher','gate','burst','groove','logic']),'Switcher: wire its ● out to as many places as you like. Only one wire is live; each step pulse moves it to the next. Gate gives notes a length, so voices hold them.');
-section('Generate',basic(['rain','orbits','growth']),'Modules that play by themselves: random rain, planets that sound as they pass the top, and a vine that grows a melody.');
-section('Mod',basic(['lfo','envelope','random','macro','follower','func','sh','slew','comparator','cvmix']),'Drag a ◆ output onto any ring or dial of any module. Every instrument also has its own ◆ env output (its hits as a shape) and a ● hit output (to play another instrument).');
-section('Voices',[...Object.keys(SYNTH_PRESETS).map(k=>item('Synth · '+k,COL.coral,()=>addNode('synth',SYNTH_PRESETS[k]))),...['drone','acid','string','cloud'].map(k=>item(TYPES[k].name,TYPES[k].color,()=>addNode(k)))],'Every synth is fully shapeable: tap it to bloom wave, FM, filter, envelope and pitch dials. Drone never retriggers: it sustains, and notes glide it to a new pitch. Acid slides between overlapping notes; loud notes are accented. Cloud plays grains of any sample you drop on it.');
-section('Processors',basic(['ducker','stutter','lpg','looper','resonator']),'Audio modules you play with events: pump with a Ducker, stutter on a trigger, pluck through a low-pass gate, loop and resonate.');
-section('Arrange',basic(['phrase','riser','scenes']),'Phrase fires every bar, 4, 8 and 16 bars. Riser builds for a few bars and fires a drop. Scenes stores up to four versions of the patch: tap ● then a number to store, a number to morph there, or step through them from Phrase.');
+section('Time',basic(['clock','pulsar','divider','mult']));
+section('Sequence',basic(['sequencer','euclid','turing','marbles','grids']));
+section('Harmony',basic(['key','chord','snap','shift']));
+section('Logic',basic(['chance','walker','repeater','switcher','gate','burst','groove','logic']));
+section('Generate',basic(['rain','orbits','growth']));
+section('Mod',basic(['lfo','envelope','random','macro','follower','func','sh','slew','comparator','cvmix']));
+section('Voices',[...Object.keys(SYNTH_PRESETS).map(k=>item('Synth · '+k,COL.coral,()=>addNode('synth',SYNTH_PRESETS[k]))),...['drone','acid','string','cloud'].map(k=>item(TYPES[k].name,TYPES[k].color,()=>addNode(k)))]);
+section('Processors',basic(['ducker','stutter','lpg','looper','resonator']));
+section('Arrange',basic(['phrase','riser','scenes']));
 section('Samples',[
   item('Import audio…','#7ee8ff',()=>fileIn.click(),true),
   item('Glass (pitched)','#7ee8ff',()=>addNode('sampler',{mode:1,rootNote:69,release:.4},{sid:'builtin:glass'})),
   item('Break (loop)','#7ee8ff',()=>addNode('sampler',{mode:2,bars:1},{sid:'builtin:break'})),
   item('Break (slice)','#7ee8ff',()=>addNode('sampler',{mode:3,slices:2},{sid:'builtin:break'})),
-],'Drop audio anywhere on the canvas, or onto a sampler to swap its sound. Pitched mode turns any sound into a scaled instrument.');
+]);
 {const h=document.createElement('h3');h.textContent='Drums';rackEl.appendChild(h);
   PACKS.forEach((pk,pi)=>{const h4=document.createElement('h4');h4.style.setProperty('--c',pk.color);h4.innerHTML='<i></i>';h4.append(pk.name);rackEl.appendChild(h4);
     const box=document.createElement('div');box.className='items';pk.inst.forEach(([nm],ii)=>box.appendChild(item(nm,pk.color,()=>addNode('drum',{pack:pi,inst:ii}))));rackEl.appendChild(box)})}
-section('FX',Object.keys(FX).map(k=>item(FX[k].name,FAM[FX[k].fam],()=>addNode('fx_'+k))),'Audio ■ out → □ in. Chain as many as you like.');
-section('MIDI',basic(['midiin']),'Play the patch from a keyboard: notes come out quantized to the current key. Use the MIDI button in the header to connect and map knobs.');
-section('Out',[item('Speakers / channel',COL.white,()=>addNode('output'))],'Add one per element to mix: level, pan, M for mute, S for solo. Double-tap any module to name it. Unwired audio goes straight out and is silenced while anything is soloed.');
+section('FX',Object.keys(FX).map(k=>item(FX[k].name,FAM[FX[k].fam],()=>addNode('fx_'+k))));
+section('MIDI',basic(['midiin']));
+section('Out',[item('Speakers / channel',COL.white,()=>addNode('output'))]);
 rackBtn.onclick=()=>{rackEl.hidden=!rackEl.hidden;rackBtn.setAttribute('aria-expanded',String(!rackEl.hidden))};
-const demoBtn=document.getElementById('demo'),demoMenu=document.getElementById('demoMenu');
-DEMOS.forEach(D=>{const b=document.createElement('button');b.type='button';b.innerHTML='<b></b><br><small></small>';b.querySelector('b').textContent=D.name;b.querySelector('small').textContent=D.what;
-  b.onclick=()=>{closePops();flushSave();const id=addSong(D.name+' (demo)',null);lib.cur=id;D.fn();lib.songs[id].data=serialize();lib.cur=null;openSong(id)};demoMenu.appendChild(b)});
-{const p=document.createElement('p');p.textContent='Each demo opens as a new song, so nothing you have is replaced.';demoMenu.appendChild(p)}
-demoBtn.onclick=e=>{e.stopPropagation();const open=demoMenu.hidden;closePops();if(open){demoMenu.hidden=false;demoBtn.setAttribute('aria-expanded','true');placePop(demoMenu,demoBtn)}};
+const setBtn=document.getElementById('setBtn'),setPanel=document.getElementById('setPanel'),setOpts=document.getElementById('setOpts');
+function applySettings(){try{localStorage.setItem(SET_KEY,JSON.stringify(setv))}catch(e){}resize();renderSettings()}
+function renderSettings(){setOpts.innerHTML='';
+  SET_UI.forEach(([k,label,choices])=>{const row=document.createElement('label');row.className='opt';const sp=document.createElement('span');sp.textContent=label;
+    if(choices){const s=document.createElement('select');choices.forEach(v=>s.add(new Option(v+' fps',v)));s.value=setv[k];s.onchange=()=>{setv[k]=+s.value;applySettings()};row.append(sp,s)}
+    else{const c=document.createElement('input');c.type='checkbox';c.checked=!!setv[k];c.onchange=()=>{setv[k]=c.checked;applySettings()};row.append(c,sp)}
+    setOpts.append(row)})}
+renderSettings();
+setBtn.onclick=e=>{e.stopPropagation();const open=setPanel.hidden;closePops();if(open){setPanel.hidden=false;setBtn.setAttribute('aria-expanded','true');placePop(setPanel,setBtn)}};
+document.getElementById('setLow').onclick=()=>{setv={...SET_LOW};applySettings()};
+document.getElementById('setDef').onclick=()=>{setv={...SET_DEF};applySettings()};
+// demos live in the song list: each is a song tagged with its demo, built the first time it's opened (or reset)
+const demoSong=name=>Object.keys(lib.songs).find(id=>lib.songs[id].demo===name);
+function buildDemo(D,id){lib.cur=id;D.fn();lib.songs[id].data=serialize();lib.cur=null}
+function openDemo(D){flushSave();let id=demoSong(D.name);if(!id){id=addSong(D.name,null);lib.songs[id].demo=D.name;buildDemo(D,id)}openSong(id)}
 const clearBtn=document.getElementById('clear');let clearArm=0;
 clearBtn.onclick=()=>{if(Date.now()-clearArm<3000){nodes.forEach(killAu);nodes=[];wires=[];sections=[];secSel=null;sel=null;save();clearBtn.textContent='Clear';clearArm=0}else{clearArm=Date.now();clearBtn.textContent='Tap again to clear';setTimeout(()=>{clearBtn.textContent='Clear'},3000)}};
 
 /* ---------- song picker ---------- */
 const songSel=document.getElementById('song'),songName=document.getElementById('songName'),songMenu=document.getElementById('songMenu'),songMenuBtn=document.getElementById('songMenuBtn'),songFile=document.getElementById('songFile');
-function refreshSongs(){songSel.innerHTML='';Object.entries(lib.songs).sort((a,b)=>a[1].name.localeCompare(b[1].name)).forEach(([id,x])=>songSel.add(new Option(x.name,id)));songSel.value=lib.cur}
-songSel.onchange=()=>openSong(songSel.value);
+function refreshSongs(){songSel.innerHTML='';
+  const mine=Object.entries(lib.songs).filter(([,x])=>!x.demo).sort((a,b)=>a[1].name.localeCompare(b[1].name));
+  if(mine.length){const og=document.createElement('optgroup');og.label='Your songs';mine.forEach(([id,x])=>og.append(new Option(x.name,id)));songSel.append(og)}
+  const og=document.createElement('optgroup');og.label='Demos';
+  DEMOS.forEach((D,i)=>{const o=new Option(D.name+' · '+D.what,demoSong(D.name)||'demo:'+i);o.title=D.what;og.append(o)});songSel.append(og);
+  songSel.value=lib.cur}
+songSel.onchange=()=>{const v=songSel.value;if(v.startsWith('demo:'))openDemo(DEMOS[+v.slice(5)]);else openSong(v)};
 function placePop(el,btn){const st=stage.getBoundingClientRect(),b=btn.getBoundingClientRect();el.style.left=Math.max(12,Math.min(b.left-st.left,st.width-el.offsetWidth-12))+'px'}
-function closePops(){demoMenu.hidden=true;demoBtn.setAttribute('aria-expanded','false');songMenu.hidden=true;songMenuBtn.setAttribute('aria-expanded','false');midiPanel.hidden=true;midiBtn.setAttribute('aria-expanded','false');midiBtn.classList.toggle('on',midiLearn)}
-songMenuBtn.onclick=e=>{e.stopPropagation();const open=songMenu.hidden;closePops();if(open){songMenu.hidden=false;songMenuBtn.setAttribute('aria-expanded','true');placePop(songMenu,songMenuBtn)}};
-document.addEventListener('pointerdown',e=>{if(!e.target.closest('.pop,#songMenuBtn,#midiBtn,#demo'))closePops()});
+function closePops(){setPanel.hidden=true;setBtn.setAttribute('aria-expanded','false');songMenu.hidden=true;songMenuBtn.setAttribute('aria-expanded','false');midiPanel.hidden=true;midiBtn.setAttribute('aria-expanded','false');midiBtn.classList.toggle('on',midiLearn)}
+songMenuBtn.onclick=e=>{e.stopPropagation();const open=songMenu.hidden;closePops();if(open){songMenu.querySelector('[data-act="reset"]').hidden=!lib.songs[lib.cur].demo;songMenu.hidden=false;songMenuBtn.setAttribute('aria-expanded','true');placePop(songMenu,songMenuBtn)}};
+document.addEventListener('pointerdown',e=>{if(!e.target.closest('.pop,#songMenuBtn,#midiBtn,#setBtn'))closePops()});
 function renameSong(){songSel.hidden=true;songName.hidden=false;songName.value=lib.songs[lib.cur].name;songName.focus();songName.select()}
 function endRename(commit){if(songName.hidden)return;const v=songName.value.trim();if(commit&&v&&v!==lib.songs[lib.cur].name){lib.songs[lib.cur].name=uniqueName(v);writeLib()}songName.hidden=true;songSel.hidden=false;refreshSongs()}
 songName.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Enter')endRename(true);if(e.key==='Escape')endRename(false)});
@@ -1845,7 +1888,7 @@ function unb64(str){const b=atob(str),u=new Uint8Array(b.length);for(let i=0;i<b
 function download(name,text){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:'application/json'}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},2000)}
 async function exportSong(){
   flushSave();const sg=lib.songs[lib.cur],samples={};
-  for(const n of nodes){if(n.type!=='sampler'||!n.sid||n.sid.startsWith('builtin:')||samples[n.sid])continue;
+  for(const n of nodes){if((n.type!=='sampler'&&n.type!=='cloud')||!n.sid||n.sid.startsWith('builtin:')||samples[n.sid])continue;
     try{const rec=await idb.get(n.sid);if(rec)samples[n.sid]={name:rec.name,b64:b64(rec.data)}}catch(e){}}
   download(sg.name.replace(/[^\w\- ]+/g,'').trim().replace(/\s+/g,'-')+'.orrery.json',JSON.stringify({format:'orrery-song',version:1,name:sg.name,data:sg.data,samples}));
   flashMsg('Exported. If nothing downloaded, this page is not allowed to save files here: open Orrery on its own site.');
@@ -1865,6 +1908,9 @@ songMenu.addEventListener('click',e=>{
   else if(act==='rename'){closePops();renameSong()}
   else if(act==='export'){closePops();exportSong()}
   else if(act==='import'){closePops();songFile.click()}
+  else if(act==='reset'){const S=lib.songs[lib.cur],D=DEMOS.find(x=>x.name===S.demo);if(!D)return;
+    if(Date.now()-delArm>3000){delArm=Date.now();b.textContent='Tap again to reset "'+S.name+'"';setTimeout(()=>{b.textContent='Reset demo to original'},3000);return}
+    delArm=0;b.textContent='Reset demo to original';closePops();const id=lib.cur;lib.cur=null;buildDemo(D,id);openSong(id);flashMsg(D.name+' is back to the original')}
   else if(act==='del'){
     if(Date.now()-delArm>3000){delArm=Date.now();b.textContent='Tap again to delete "'+lib.songs[lib.cur].name+'"';setTimeout(()=>{b.textContent='Delete song'},3000);return}
     delArm=0;b.textContent='Delete song';closePops();const gone=lib.songs[lib.cur].name;delete lib.songs[lib.cur];lib.cur=null;

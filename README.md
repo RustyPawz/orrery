@@ -31,7 +31,7 @@ It's a companion to the [RedtailWorks FM-1 firmwares](https://rustypawz.github.i
 
 ## Demos
 
-**Load demo** adds any of these as a new song: **Crypt** (hypnotic goth techno), **Monolith** (a cinematic synth drone), **Cartridge** (chiptune) and **Xenoflora** (an alien soundscape). Each is grouped into labelled sections, so you can see what every part does.
+The demos sit in the song list under **Demos**: **Crypt** (hypnotic goth techno), **Monolith** (a cinematic synth drone), **Cartridge** (chiptune) and **Xenoflora** (an alien soundscape). Each is grouped into labelled sections, so you can see what every part does. Edit them like any song; **Reset demo to original** in the song menu (⋯) brings back the original.
 
 ## Songs
 
@@ -48,6 +48,10 @@ Patches are saved as songs in your browser, as many as you like, and you swap be
 - To arrange a song, store a few scenes (tap ● on Scenes, then a slot number) and wire Phrase's 8-bar output into Scenes' **next**. Riser on the 4-bar output builds into each change.
 - Drag a selected module's rim to resize it, double-tap a module to name it.
 - **◯ Section** draws a labelled circle around part of the patch; drag its label to move everything inside.
+
+## Settings
+
+**Settings** in the header turns off drawing you don't need: moving pulses on wires, crawling dashes, glow, the note trail, the background grid, and high-res drawing. It can also cap the frame rate at 30 or 15 fps. **Low-power preset** does all of that at once. None of it changes the music. Settings are saved in your browser, and moving pulses and dashes start off if your system asks for reduced motion.
 
 MIDI needs Chrome or Edge (Web MIDI). Everything else works in any current browser.
 
