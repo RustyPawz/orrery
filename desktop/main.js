@@ -8,13 +8,15 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
-// The app was called Orrery before ORY-1. Move its saved songs and settings (userData) and its Documents folder
-// to the new name on first launch; if a folder can't be moved (a file in it is open), keep using the old one.
+// The app was called Orrery before ORY-1. Its saved songs and settings stay where they are: Chromium creates the
+// new userData folder before this script runs, so it can't be moved into place, and nobody sees its name anyway.
+// The Documents folder people do see, so that one moves to the new name; if it can't (a file in it is open), the old one is used.
+const oldData = path.join(app.getPath('appData'), 'Orrery');
+if (fs.existsSync(oldData)) app.setPath('userData', oldData);
 function moveFolder(from, to) {
   if (fs.existsSync(from) && !fs.existsSync(to)) { try { fs.renameSync(from, to); } catch (e) { return from; } }
   return to;
 }
-app.setPath('userData', moveFolder(path.join(app.getPath('appData'), 'Orrery'), app.getPath('userData')));
 let docsDir = '';
 
 if (!app.requestSingleInstanceLock()) app.quit();
