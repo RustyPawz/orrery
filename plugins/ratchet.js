@@ -1,4 +1,4 @@
-// Ratchet: an example Orrery plugin. Sometimes turns a note into a quick roll.
+// Ratchet: an example ORY-1 plugin. Sometimes turns a note into a quick roll.
 // The simplest kind of plugin: events in, events out, drawn as a normal circle module with dials.
 export default {
   id: 'example.ratchet',
@@ -17,7 +17,7 @@ export default {
   // every note that arrives: pass it on, and sometimes add the roll after it
   onEvent(node, port, ev, out) {
     const hits = Math.random() < node.p.chance ? node.p.hits : 1;
-    const gap = Orrery.sixteenth() * [0.5, 1, 2][node.p.space];
+    const gap = ORY.sixteenth() * [0.5, 1, 2][node.p.space];
     for (let i = 0; i < hits; i++) out('out', { t: ev.t + i * gap, vel: ev.vel * (1 - node.p.fade * i / hits) });
   },
 

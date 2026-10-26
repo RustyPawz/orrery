@@ -1,4 +1,4 @@
-// Orrery desktop: the same play/index.html as the website, in its own window, with a plugins folder it watches.
+// ORY-1 desktop: the same play/index.html as the website, in its own window, with a plugins folder it watches.
 const { app, BrowserWindow, ipcMain, shell, Menu, session, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -8,10 +8,19 @@ app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
+// The app was called Orrery before ORY-1. Move its saved songs and settings (userData) and its Documents folder
+// to the new name on first launch; if a folder can't be moved (a file in it is open), keep using the old one.
+function moveFolder(from, to) {
+  if (fs.existsSync(from) && !fs.existsSync(to)) { try { fs.renameSync(from, to); } catch (e) { return from; } }
+  return to;
+}
+app.setPath('userData', moveFolder(path.join(app.getPath('appData'), 'Orrery'), app.getPath('userData')));
+let docsDir = '';
+
 if (!app.requestSingleInstanceLock()) app.quit();
 
 // Windows slows down apps you aren't looking at (EcoQoS: power-saving cores, capped clocks, coarse timers).
-// Audio is made a few milliseconds ahead, so that turns into crackles; every Orrery process opts out, the way audio software does.
+// Audio is made a few milliseconds ahead, so that turns into crackles; every ORY-1 process opts out, the way audio software does.
 let winApi = null;
 if (process.platform === 'win32') {
   try {
@@ -25,7 +34,7 @@ if (process.platform === 'win32') {
       SetProcessInformation: k32.func('int __stdcall SetProcessInformation(void *h, int cls, _In_ PROCESS_POWER_THROTTLING_STATE *info, uint32_t size)'),
       SetPriorityClass: k32.func('int __stdcall SetPriorityClass(void *h, uint32_t cls)'),
     };
-  } catch (e) { winApi = null; /* without it Orrery still runs; it just may crackle in the background */ }
+  } catch (e) { winApi = null; /* without it ORY-1 still runs; it just may crackle in the background */ }
 }
 function keepAwake(pid) {
   const h = winApi.OpenProcess(0x0200, 0, pid); // PROCESS_SET_INFORMATION
@@ -58,7 +67,8 @@ const bundled = path.join(__dirname, '..', 'plugins');
 
 // first run: make the plugins folder and put the example plugins and a short readme in it
 function preparePluginsDir() {
-  pluginsDir = path.join(app.getPath('documents'), 'Orrery', 'plugins');
+  docsDir = moveFolder(path.join(app.getPath('documents'), 'Orrery'), path.join(app.getPath('documents'), 'ORY-1'));
+  pluginsDir = path.join(docsDir, 'plugins');
   const fresh = !fs.existsSync(pluginsDir);
   fs.mkdirSync(pluginsDir, { recursive: true });
   if (!fresh) return;
@@ -67,9 +77,9 @@ function preparePluginsDir() {
   }
 }
 
-// the samples folder: any audio inside it (subfolders too) shows up in Orrery's Rack
+// the samples folder: any audio inside it (subfolders too) shows up in ORY-1's Rack
 function prepareSamplesDir() {
-  samplesDir = path.join(app.getPath('documents'), 'Orrery', 'samples');
+  samplesDir = path.join(docsDir, 'samples');
   fs.mkdirSync(samplesDir, { recursive: true });
 }
 
@@ -155,7 +165,7 @@ function createWindow() {
   const b = loadBounds();
   win = new BrowserWindow({
     x: b.x, y: b.y, width: b.width || 1440, height: b.height || 900, minWidth: 720, minHeight: 480,
-    backgroundColor: '#0a0614', title: 'Orrery', show: false,
+    backgroundColor: '#0a0614', title: 'ORY-1', show: false,
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -167,7 +177,7 @@ function createWindow() {
   win.once('ready-to-show', () => win.show());
   win.on('close', saveBounds);
   for (const ev of ['blur', 'minimize', 'hide']) win.on(ev, () => setTimeout(optOutOfThrottling, 150));
-  // links like "by RedtailWorks" open in the real browser, not in an Orrery window
+  // links like "by RedtailWorks" open in the real browser, not in an ORY-1 window
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
   win.loadFile(path.join(__dirname, '..', 'play', 'index.html'));
 }
@@ -190,7 +200,7 @@ function buildMenu() {
     ] },
     { role: 'help', submenu: [
       { label: 'Making Plugins', click: () => shell.openExternal('https://github.com/RustyPawz/orrery/blob/main/PLUGINS.md') },
-      { label: 'Orrery on the Web', click: () => shell.openExternal('https://rustypawz.github.io/orrery/') },
+      { label: 'ORY-1 on the Web', click: () => shell.openExternal('https://rustypawz.github.io/orrery/') },
     ] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));

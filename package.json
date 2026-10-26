@@ -1,6 +1,6 @@
 {
-  "name": "orrery",
-  "productName": "Orrery",
+  "name": "ory-1",
+  "productName": "ORY-1",
   "version": "1.0.0",
   "description": "A generative modular music studio: wire clocks, sequencers, voices and modulation into patches that play themselves.",
   "main": "desktop/main.js",
@@ -18,7 +18,7 @@
   },
   "build": {
     "appId": "works.redtail.orrery",
-    "productName": "Orrery",
+    "productName": "ORY-1",
     "files": [
       "play/index.html",
       "desktop/main.js",
@@ -39,7 +39,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "Orrery"
+      "shortcutName": "ORY-1"
     },
     "mac": {
       "target": "dmg",

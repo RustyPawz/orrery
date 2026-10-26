@@ -1,8 +1,8 @@
-# Making Orrery plugins
+# Making ORY-1 plugins
 
-A plugin is one `.js` file that adds new module types to Orrery. It can be a normal circle module with dials, a voice with its own sound, a free-form shape you draw yourself, or a module with its own HTML controls.
+A plugin is one `.js` file that adds new module types to ORY. It can be a normal circle module with dials, a voice with its own sound, a free-form shape you draw yourself, or a module with its own HTML controls.
 
-- **Desktop app:** drop the file into `Documents/Orrery/plugins` (**File → Open Plugins Folder**). Orrery watches the folder, so saving the file reloads it while you play.
+- **Desktop app:** drop the file into `Documents/ORY-1/plugins` (**File → Open Plugins Folder**). ORY-1 watches the folder, so saving the file reloads it while you play.
 - **Website:** **Settings → Plugins → Add plugin file…**. The plugin is kept in that browser.
 
 The new modules appear in the Rack, in the section named by their `category`.
@@ -16,7 +16,7 @@ The [plugins folder](plugins) holds four working examples:
 
 Copying one of them is the quickest way to start.
 
-> Plugins are ordinary JavaScript with full access to Orrery and the page. Only install plugins you trust.
+> Plugins are ordinary JavaScript with full access to ORY-1 and the page. Only install plugins you trust.
 
 ## The smallest plugin
 
@@ -28,12 +28,12 @@ export default {
   inputs:  [{ id: 'in',  kind: 'event' }],
   outputs: [{ id: 'out', kind: 'event' }],
   onEvent(node, port, ev, out) {
-    out('out', { deg: ev.deg + Orrery.key.notes.length });   // one octave up, in the current key
+    out('out', { deg: ev.deg + ORY.key.notes.length });   // one octave up, in the current key
   },
 };
 ```
 
-A file can also `export default` an array of modules, or call `Orrery.register(module)` for each.
+A file can also `export default` an array of modules, or call `ORY.register(module)` for each.
 
 Songs save each module by its `id`, so keep the `id` stable once people use your plugin. If a song uses a plugin that isn't installed, those modules show as dashed **missing** placeholders. Their settings and wires are kept, and they come back when the plugin does.
 
@@ -47,13 +47,13 @@ Songs save each module by its `id`, so keep the `id` stable once people use your
 | `color` | `#rrggbb`. |
 | `size` | Radius of a circle module (default 46). |
 | `shape` | `{ width, height }` makes a free-form box instead of a circle. |
-| `drawBody` | `false` skips Orrery's circle or box, so `draw` draws everything. |
+| `drawBody` | `false` skips ORY-1's circle or box, so `draw` draws everything. |
 | `inputs`, `outputs` | Ports; see below. |
 | `params` | Dials; see below. |
 | `init(node)` | Called when the module is created or loaded. Set up `node.data` here. |
 | `onEvent(node, port, ev, out)` | A note or pulse arrived on an event input. |
 | `schedule(node, from, to, out)` | Make your own events between two times. Used by generators that aren't clocked from outside. |
-| `audio(ctx, node, Orrery)` | Build the module's audio. Return `{ input, output, set(params), stop() }`; every field is optional. |
+| `audio(ctx, node, ORY)` | Build the module's audio. Return `{ input, output, set(params), stop() }`; every field is optional. |
 | `modulate(node, port, t)` | The value of a `mod` output at time `t`, roughly −1 to 1. |
 | `tick(node, t, dt)` | Called about 40 times a second. Use it for smoothing, followers and anything continuous. |
 | `onParam(node, id)` | A dial was changed. |
@@ -85,7 +85,7 @@ outputs: [{ id: 'out', kind: 'event' }, { id: 'lfo', kind: 'mod', label: 'lfo' }
 
 An event is `{ t, deg, vel, len }`:
 
-- `t`: when it happens, in audio-clock seconds. It's usually a little in the future, because Orrery schedules ahead.
+- `t`: when it happens, in audio-clock seconds. It's usually a little in the future, because ORY-1 schedules ahead.
 - `deg`: a scale degree in the current key, where 0 is the root.
 - `vel`: from 0 to 1.
 - `len`: an optional note length in seconds.
@@ -112,7 +112,7 @@ params: [
 | Field | |
 |---|---|
 | `node.p` | Dial values. |
-| `node.data` | Your own saved data: anything JSON can hold. It's saved with the song. Call `Orrery.save()` after changing it outside `onPointer`. |
+| `node.data` | Your own saved data: anything JSON can hold. It's saved with the song. Call `ORY.save()` after changing it outside `onPointer`. |
 | `node.st` | Scratch state. It's cleared each time Play starts. |
 | `node.au` | What `audio()` returned. |
 | `node.id`, `node.x`, `node.y` | Identity and position. |
@@ -128,7 +128,7 @@ params: [
 - `selected`
 - `width`, `height`, `radius`
 
-Orrery draws ports, labels and selection itself. With `drawBody: false` you replace the circle or box entirely, and the module can look like anything. Keep `draw` light, because it runs every frame. If it throws, the error is reported and the rest of Orrery carries on.
+ORY-1 draws ports, labels and selection itself. With `drawBody: false` you replace the circle or box entirely, and the module can look like anything. Keep `draw` light, because it runs every frame. If it throws, the error is reported and the rest of ORY-1 carries on.
 
 ## Pointer input
 
@@ -157,38 +157,38 @@ onButton(node, i) { if (i === 0) node.data.rec = !node.data.rec; },
 ```js
 panel: {
   width: 200, height: 40, x: 0, y: 8,          // size and offset from the module's centre, in module units
-  mount(el, node, Orrery) { /* build any HTML inside el */ },
+  mount(el, node, ORY) { /* build any HTML inside el */ },
   unmount(el, node) { /* optional clean-up */ },
 }
 ```
 
 The panel floats over the canvas, follows the module as you pan and zoom, and receives its own clicks. Anything a web page can do works here, such as sliders, text, a small piano or a `<canvas>`. See `step-pad.js`.
 
-## The Orrery object
+## The ORY object
 
-Available everywhere as `Orrery`, and passed to `audio()` and panels:
+Available everywhere as `ORY`, and passed to `audio()` and panels. Plugins written before the rename that use `Orrery` still work: it is the same object.
 
 | | |
 |---|---|
-| `Orrery.audio` | The `AudioContext` (null until Play is first pressed). |
-| `Orrery.now()` | The audio clock, in seconds. |
-| `Orrery.bpm`, `Orrery.beat()`, `Orrery.sixteenth()` | Tempo, and the length of a beat and of a 16th note in seconds. |
-| `Orrery.playing` | Whether the patch is playing. |
-| `Orrery.key` | `{ root, scale, notes }`: `notes` are the scale's semitones. |
-| `Orrery.degreeToMidi(deg, base = 48)` | A scale degree to a MIDI note in the current key. |
-| `Orrery.midiToFreq(midi)` | A MIDI note to a frequency in Hz. |
-| `Orrery.snap(deg, 'triad', chordRoot)` | Bend a degree onto chord tones (`triad`, `seventh`, `sus`, `fifths`, `root`, `five-note`). |
-| `Orrery.noiseBuffer()` | A one-second white-noise `AudioBuffer`. |
-| `Orrery.trail(node, t, midi, dur)` | Show a note in the trail behind the patch. |
-| `Orrery.envelope(node, t, level, attack, decay)` | Fire the module's envelope (for voices whose `mod` output is an envelope). |
-| `Orrery.message(text)` | Show a short message at the top of the canvas. |
-| `Orrery.save()` | Save the song soon. |
-| `Orrery.alpha('#rrggbb', a)` | A colour with transparency, for drawing. |
-| `Orrery.register(module)` | Register a module type yourself. |
+| `ORY.audio` | The `AudioContext` (null until Play is first pressed). |
+| `ORY.now()` | The audio clock, in seconds. |
+| `ORY.bpm`, `ORY.beat()`, `ORY.sixteenth()` | Tempo, and the length of a beat and of a 16th note in seconds. |
+| `ORY.playing` | Whether the patch is playing. |
+| `ORY.key` | `{ root, scale, notes }`: `notes` are the scale's semitones. |
+| `ORY.degreeToMidi(deg, base = 48)` | A scale degree to a MIDI note in the current key. |
+| `ORY.midiToFreq(midi)` | A MIDI note to a frequency in Hz. |
+| `ORY.snap(deg, 'triad', chordRoot)` | Bend a degree onto chord tones (`triad`, `seventh`, `sus`, `fifths`, `root`, `five-note`). |
+| `ORY.noiseBuffer()` | A one-second white-noise `AudioBuffer`. |
+| `ORY.trail(node, t, midi, dur)` | Show a note in the trail behind the patch. |
+| `ORY.envelope(node, t, level, attack, decay)` | Fire the module's envelope (for voices whose `mod` output is an envelope). |
+| `ORY.message(text)` | Show a short message at the top of the canvas. |
+| `ORY.save()` | Save the song soon. |
+| `ORY.alpha('#rrggbb', a)` | A colour with transparency, for drawing. |
+| `ORY.register(module)` | Register a module type yourself. |
 
 ## Keeping it light
 
-Orrery has to run on modest computers without the audio crackling:
+ORY-1 has to run on modest computers without the audio crackling:
 
 - **Create audio nodes per note, and stop them.** Always give `start()` a matching `stop()`, the way `sine-bell.js` does, so finished notes free their nodes.
 - **Avoid heavy work in `tick`, `draw` and `onEvent`.** No big loops or allocations: `tick` runs about 40 times a second and `draw` every frame.

@@ -1,4 +1,4 @@
-// Step Pad: an example Orrery plugin. Eight on/off steps as real HTML buttons on a free-form module.
+// Step Pad: an example ORY-1 plugin. Eight on/off steps as real HTML buttons on a free-form module.
 // Shows an HTML panel: any UI you can build in a web page, riding along with the module as you pan and zoom.
 const STEPS = 8;
 

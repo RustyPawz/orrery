@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Orrery</title>
-<meta name="description" content="Orrery: a generative modular music studio in your browser. Wire clocks, sequencers, chords, synths, drums, samples, FX and modulation into patches that play themselves. By RedtailWorks.">
+<title>ORY-1</title>
+<meta name="description" content="ORY-1: a generative modular music studio in your browser. Wire clocks, sequencers, chords, synths, drums, samples, FX and modulation into patches that play themselves. By RedtailWorks.">
 <meta name="theme-color" content="#120b20">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Orrery · generative modular by RedtailWorks">
-<meta property="og:description" content="Orrery: a generative modular music studio in your browser. Wire clocks, sequencers, chords, synths, drums, samples, FX and modulation into patches that play themselves. By RedtailWorks.">
+<meta property="og:title" content="ORY-1 · generative modular by RedtailWorks">
+<meta property="og:description" content="ORY-1: a generative modular music studio in your browser. Wire clocks, sequencers, chords, synths, drums, samples, FX and modulation into patches that play themselves. By RedtailWorks.">
 <meta property="og:url" content="https://rustypawz.github.io/orrery/play/">
 <meta property="og:image" content="https://rustypawz.github.io/orrery/preview.png">
 <meta name="twitter:card" content="summary_large_image">
@@ -108,7 +108,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
 </head>
 <body>
 <header>
-  <div class="brand"><b>ORRERY</b><span>generative modular</span><a class="by" href="https://rustypawz.github.io/fm1-HYP1/" target="_blank" rel="noopener">by RedtailWorks</a></div>
+  <div class="brand"><b>ORY-1</b><span>generative modular</span><a class="by" href="https://rustypawz.github.io/fm1-HYP1/" target="_blank" rel="noopener">by RedtailWorks</a></div>
   <div class="group">
     <button id="play" type="button">Play</button>
     <label for="bpm">bpm</label><input id="bpm" type="number" min="40" max="220" value="104">
@@ -161,7 +161,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
     <ul id="plugList"></ul>
     <div class="row"><button type="button" id="plugAdd">Add plugin file…</button><button type="button" id="plugReload">Reload plugins</button></div>
     <input type="file" id="plugFile" accept=".js,text/javascript" multiple hidden>
-    <p>A plugin is a .js file that adds new module types. See PLUGINS.md to make your own. Plugins run with full access to Orrery, so only add ones you trust.</p>
+    <p>A plugin is a .js file that adds new module types. See PLUGINS.md to make your own. Plugins run with full access to ORY-1, so only add ones you trust.</p>
   </div>
   <div class="pop midi" id="midiPanel" hidden>
     <p class="st" id="midiStatus">Not connected.</p>
@@ -223,6 +223,10 @@ let ctx=null,directBus,master,ana,anaBuf,noiseBuf,playing=false,t0=0;
 const G=v=>{const x=ctx.createGain();x.gain.value=v;return x};
 const sm=(prm,v)=>prm.setTargetAtTime(v,ctx.currentTime,.03);
 const filt=(type,f,q)=>{const b=ctx.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=q??.7;return b};
+// for filters whose settings are modulated or enveloped: recompute once per 128-sample block instead of every sample.
+// Per-sample (a-rate) biquads are among the most expensive things in Web Audio; slow sweeps and LFOs sound the same at block rate.
+const kRate=(...ps)=>{for(const p of ps)try{p.automationRate='k-rate'}catch(e){}};
+const filtK=(type,f,q)=>{const b=filt(type,f,q);kRate(b.frequency,b.detune,b.Q,b.gain);return b};
 // inside feedback loops: lowpass Q is in dB here, so anything above -3 peaks over unity and the loop runs away
 const LOOP_Q=-3.5;
 function softClip(){const s=ctx.createWaveShaper(),c=new Float32Array(1025);for(let i=0;i<1025;i++)c[i]=Math.tanh(i/512-1);s.curve=c;return s}
@@ -267,7 +271,7 @@ function synthNote(n,t,midi,vel,len){
   if(!voiceOk(n,end))return;
   const U=p.detune>0?p.unison:1,pk=vel*p.level*.28/Math.sqrt(Math.max(1,U/2));
   const amp=G(0);amp.gain.setValueAtTime(0,t);amp.gain.linearRampToValueAtTime(pk,t+atk);amp.gain.setValueAtTime(pk,t+atk+hold);amp.gain.setTargetAtTime(0,t+atk+hold,rel/4);
-  const fl=filt(FTYPES[p.ftype],1000,p.reso);
+  const fl=filtK(FTYPES[p.ftype],1000,p.reso);
   const cut=40*Math.pow(400,p.cutoff),top=Math.min(18000,Math.max(30,cut*Math.pow(2,p.fenv*5)));
   fl.frequency.setValueAtTime(cut,t);fl.frequency.linearRampToValueAtTime(top,t+atk+.003);fl.frequency.setTargetAtTime(cut,t+atk+.003,(hold+rel)/3+.01);
   fl.connect(amp);amp.connect(n.au.out);
@@ -445,7 +449,7 @@ const FX={
     mk(){const d=ctx.createDelay(.05),fb=G(.5);d.delayTime.value=.004;d.connect(fb);fb.connect(d);const l=lfo(.25,.002,d.delayTime);
       return{i:d,o:d,set(p){sm(l.o.frequency,p.rate);sm(l.g.gain,p.depth*.0032);sm(fb.gain,p.fb)},stop(){l.o.stop()}}}},
   phaser:{name:'Phaser',fam:'mod',params:[P('rate','rate',.05,4,.4,.01,hz),P('depth','depth',0,1,.7),P('fb','feedback',0,.9,.4),P('mix','mix',0,1,.6)],
-    mk(){const i=G(1),aps=[0,1,2,3].map(()=>filt('allpass',900,.6)),fb=G(.4),fd=ctx.createDelay(.01);chain(i,...aps);chain(aps[3],fb,fd,aps[0]);
+    mk(){const i=G(1),aps=[0,1,2,3].map(()=>filtK('allpass',900,.6)),fb=G(.4),fd=ctx.createDelay(.01);chain(i,...aps);chain(aps[3],fb,fd,aps[0]);
       const ls=aps.map(a=>lfo(.4,500,a.frequency));
       return{i,o:aps[3],set(p){ls.forEach(l=>{sm(l.o.frequency,p.rate);sm(l.g.gain,p.depth*700)});sm(fb.gain,p.fb)},stop(){ls.forEach(l=>l.o.stop())}}}},
   tremolo:{name:'Tremolo',fam:'mod',params:[P('rate','rate',.1,20,5,.1,hz),P('depth','depth',0,1,.6),P('mix','mix',0,1,1),P('shape','shape',0,2,0,1,L(['sine','square','tri']),{sat:1})],
@@ -463,7 +467,7 @@ const FX={
       return{i:sh,o:lp,set(p){const s=Math.pow(2,p.bits-1),c=new Float32Array(4096);for(let i=0;i<4096;i++){const x=i/2047.5-1;c[i]=Math.round(x*s)/s}sh.curve=c;sm(lp.frequency,600*Math.pow(30,p.tone))}}}},
   filter:{name:'Filter',fam:'tone',params:[P('cutoff','cutoff',0,1,.5),P('reso','resonance',0,20,4,.1,v=>'Q '+v.toFixed(1)),P('depth','lfo depth',0,1,.3),P('mix','mix',0,1,1),
       P('type','type',0,3,0,1,L(['LP','BP','HP','notch']),{sat:1}),P('rate','lfo rate',.02,10,.3,.01,hz,{sat:1})],
-    mk(){const f=filt('lowpass',1000,4),l=lfo(.3,200,f.frequency);
+    mk(){const f=filtK('lowpass',1000,4),l=lfo(.3,200,f.frequency);
       return{i:f,o:f,fast:{cutoff:f.detune},set(p){const c=40*Math.pow(400,p.cutoff);f.type=['lowpass','bandpass','highpass','notch'][p.type];sm(f.frequency,c);sm(f.Q,p.reso);sm(l.o.frequency,p.rate);sm(l.g.gain,p.depth*c*.8)},stop(){l.o.stop()}}}},
   eq:{name:'EQ',fam:'tone',params:[P('low','low',-15,15,0,.5,db),P('mid','mid',-15,15,0,.5,db),P('high','high',-15,15,0,.5,db),P('mix','mix',0,1,1)],
     mk(){const lo=filt('lowshelf',220),mi=filt('peaking',1000,.9),hi=filt('highshelf',4500);chain(lo,mi,hi);
@@ -480,7 +484,7 @@ const FX={
   // a Schroeder reverb whose tail can be frozen: input closes and the combs hold what they have
   freeze:{name:'Freeze',fam:'time',params:[P('size','size',0,1,.7),P('damp','damping',0,1,.4),P('freeze','freeze',0,1,0,1,L(['off','on'])),P('mix','mix',0,1,.45)],
     mk(){const i=G(1),ing=G(.3),o=G(1),sum=G(.25);i.connect(ing);
-      const combs=[.0297,.0371,.0411,.0437].map((dt,j)=>{const d=ctx.createDelay(.2),lp=filt('lowpass',5000,LOOP_Q),fb=G(.8),clip=softClip();d.delayTime.value=dt*2.2;ing.connect(d);chain(d,lp,clip,fb,d);lp.connect(sum);return{d,lp,fb,l:lfo(.1+j*.037,.0006,d.delayTime)}});
+      const combs=[.0297,.0371,.0411,.0437].map((dt,j)=>{const d=ctx.createDelay(.2),lp=filt('lowpass',5000,LOOP_Q),fb=G(.8),clip=softClip();d.delayTime.value=dt*2.2;kRate(d.delayTime);ing.connect(d);chain(d,lp,clip,fb,d);lp.connect(sum);return{d,lp,fb,l:lfo(.1+j*.037,.0006,d.delayTime)}});
       chain(sum,filt('allpass',800,.7),filt('allpass',2400,.7),o);
       return{i,o,set(p){const fz=p.freeze>0;sm(ing.gain,fz?0:.3);combs.forEach(c=>{sm(c.fb.gain,fz?.998:.72+p.size*.26);sm(c.lp.frequency,fz?20000:300+9000*Math.pow(.08,p.damp))})},stop(){combs.forEach(c=>c.l.o.stop())}}}},
   // reverb with an octave-up pitch shifter in its feedback loop
@@ -640,7 +644,7 @@ const TYPES={
       P('tones','tones',0,SNAP_SETS.length-1,0,1,v=>SNAP_SETS[v].l,{sat:1,s:'tones'}),P('oct','octave',-3,2,-1,1,sgn,{sat:1,s:'oct'}),P('wave','wave',0,3,2,1,L(WAVE_L),{sat:1}),
       P('voices','voices',1,5,3,1,v=>v+'×',{sat:1,s:'voice'}),P('spread','spread',0,50,12,1,v=>v+'ct',{sat:1,s:'sprd'}),P('motion','motion',0,1,.3,.01,pct,{sat:1,s:'motn'})],
     fast:{cutoff:{to:n=>n.au.cutBus,scale:10373},level:LEVEL_FAST},
-    build:()=>{const A=voiceBuild(),fl=filt('lowpass',800,1.2),amp=G(0);fl.connect(amp);amp.connect(A.out);A.cutBus.connect(fl.detune);
+    build:()=>{const A=voiceBuild(),fl=filtK('lowpass',800,1.2),amp=G(0);fl.connect(amp);amp.connect(A.out);A.cutBus.connect(fl.detune);
       const oscs=[0,1,2,3,4].map(()=>{const o=ctx.createOscillator(),og=G(0);o.connect(og);og.connect(fl);A.pitchBus.connect(o.detune);o.start();return{o,og}});
       const m1=lfo(.05,0,fl.detune),m2=lfo(.031,0,fl.detune,'triangle'),cs=ctx.createConstantSource();cs.offset.value=0;cs.connect(A.sig);cs.start();
       return{...A,fl,amp,oscs,cs,
@@ -858,7 +862,7 @@ Object.assign(TYPES,{
       P('accent','accent',0,1,.6,.01,pct,{sat:1,s:'acc'}),P('slide','slide',.01,.3,.06,.005,sec,{sat:1}),P('gate','gate',.1,1,.55,.01,pct,{sat:1}),P('wave','wave',0,1,0,1,L(['saw','square']),{sat:1}),
       P('oct','octave',-3,1,-1,1,sgn,{sat:1,s:'oct'}),P('level','level',0,1,.5,.01,pct,{sat:1})],
     fast:{cutoff:{to:n=>n.au.cutBus,scale:10373},level:LEVEL_FAST},
-    build:()=>{const A=voiceBuild(),o=ctx.createOscillator(),fl=filt('lowpass',300,10),amp=G(0);o.type='sawtooth';chain(o,fl,amp,A.out);A.cutBus.connect(fl.detune);A.pitchBus.connect(o.detune);o.start();
+    build:()=>{const A=voiceBuild(),o=ctx.createOscillator(),fl=filtK('lowpass',300,10),amp=G(0);o.type='sawtooth';chain(o,fl,amp,A.out);A.cutBus.connect(fl.detune);A.pitchBus.connect(o.detune);o.start();
       return{...A,o,fl,amp,set(p){o.type=p.wave?'square':'sawtooth';sm(fl.Q,p.reso)},stop(){o.stop()}}},
     // mono: a note that starts before the last one ends slides into it instead of retriggering
     on(n,port,ev,emit){const p=n.p,t=ev.t,midi=48+root+12*p.oct+degToSemi(ev.deg),len=ev.len??p.gate*sixteenth(),acc=ev.vel>.9?p.accent:0,slide=n.st.end>t+.001;n.st.end=t+len;
@@ -898,7 +902,7 @@ Object.assign(TYPES,{
       A.wet.gain.setValueAtTime(0,e);A.dry.gain.setValueAtTime(1,e);A.fb.gain.setValueAtTime(0,e);A.feed.gain.setValueAtTime(1,e);hpush(n,'sx',{t,e})}},
   lpg:{name:'Low-pass Gate',cat:'Processors',color:'#ffb0e0',r:46,glyph:'lpg',ins:[{id:'in',a:Math.PI,kind:AU},{id:'trig',a:2.5,kind:EV,tag:'trig'}],outs:[{id:'out',a:0,kind:AU}],
     params:[P('decay','decay',.03,3,.4,.01,sec),P('reso','resonance',0,15,2,.1,v=>'Q '+v.toFixed(1)),P('open','resting open',0,.5,0),P('mode','mode',0,2,0,1,L(LPG_MODES),{sat:1})],
-    build:()=>{const inp=G(1),fl=filt('lowpass',80,2),vca=G(0),out=G(1);chain(inp,fl,vca,out);return{inp,out,fl,vca,set(p){sm(fl.Q,p.reso);if(p.mode===2)sm(vca.gain,1)}}},
+    build:()=>{const inp=G(1),fl=filtK('lowpass',80,2),vca=G(0),out=G(1);chain(inp,fl,vca,out);return{inp,out,fl,vca,set(p){sm(fl.Q,p.reso);if(p.mode===2)sm(vca.gain,1)}}},
     on(n,port,ev){if(!n.au)return;const p=n.p,t=ev.t,len=ev.len||0,A=n.au,lpOn=p.mode!==1,vOn=p.mode!==2,tau=p.decay/3;
       A.vca.gain.cancelScheduledValues(t);A.fl.frequency.cancelScheduledValues(t);
       A.vca.gain.setTargetAtTime(vOn?ev.vel:1,t,.002);A.vca.gain.setTargetAtTime(vOn?p.open:1,t+.004+len,tau);
@@ -2013,15 +2017,15 @@ async function exportSong(){
   for(const n of nodes){if((n.type!=='sampler'&&n.type!=='cloud')||!n.sid||n.sid.startsWith('builtin:')||samples[n.sid])continue;
     try{if(n.sid.startsWith(FOLDER)&&desk){samples[n.sid]={name:sampleName(n.sid),b64:b64(await desk.readSample(n.sid.slice(FOLDER.length)))};continue}}catch(e){}
     try{const rec=await idb.get(n.sid);if(rec)samples[n.sid]={name:rec.name,b64:b64(rec.data)}}catch(e){}}
-  download(sg.name.replace(/[^\w\- ]+/g,'').trim().replace(/\s+/g,'-')+'.orrery.json',JSON.stringify({format:'orrery-song',version:1,name:sg.name,data:sg.data,samples}));
-  flashMsg('Exported. If nothing downloaded, this page is not allowed to save files here: open Orrery on its own site.');
+  download(sg.name.replace(/[^\w\- ]+/g,'').trim().replace(/\s+/g,'-')+'.ory1.json',JSON.stringify({format:'orrery-song',version:1,name:sg.name,data:sg.data,samples}));
+  flashMsg('Exported. If nothing downloaded, this page is not allowed to save files here: open ORY-1 on its own site.');
 }
 songFile.onchange=async()=>{
   const f=songFile.files[0];songFile.value='';if(!f)return;
   try{const d=JSON.parse(await f.text());if(d.format!=='orrery-song'||!d.data)throw 0;
     for(const[sid,rec]of Object.entries(d.samples||{})){try{const ab=unb64(rec.b64);await idb.put(sid,{name:rec.name,data:ab});regSample(sid,rec.name,await decode(ab))}catch(e){}}
     flushSave();openSong(addSong(d.name||'Imported song',d.data));flashMsg('Imported '+lib.songs[lib.cur].name);
-  }catch(e){flashMsg(`${f.name} isn't an Orrery song file.`)}
+  }catch(e){flashMsg(`${f.name} isn't an ORY-1 song file.`)}
 };
 let delArm=0;
 songMenu.addEventListener('click',e=>{
@@ -2052,7 +2056,7 @@ async function midiInit(){
   if(midiAcc)return;
   if(!navigator.requestMIDIAccess){midiErr="This browser doesn't support Web MIDI. Use Chrome or Edge.";renderMidi();return}
   try{midiAcc=await navigator.requestMIDIAccess();midiAcc.onstatechange=hookMidi;hookMidi()}
-  catch(e){midiErr='MIDI access was blocked. Allow MIDI for this site in the browser, or open Orrery on its own page.';renderMidi()}
+  catch(e){midiErr='MIDI access was blocked. Allow MIDI for this site in the browser, or open ORY-1 on its own page.';renderMidi()}
 }
 function hookMidi(){for(const i of midiAcc.inputs.values())i.onmidimessage=onMidi;renderMidi()}
 function renderMidi(){
@@ -2098,10 +2102,10 @@ function onMidi(e){
 }
 playBtn.addEventListener('click',e=>{if(midiLearn){e.stopImmediatePropagation();midiArm={k:'play'};flashMsg('Press a key or move a control to map Play / Stop')}},true);
 
-/* ---------- plugins: one .js file each, registering module types through window.Orrery ---------- */
+/* ---------- plugins: one .js file each, registering module types through window.ORY ---------- */
 const plugFiles=new Map(),plugErr=new Map(),plugFailT={};let loadingFile=null;
 // a broken plugin reports itself and carries on; it can never stop the clock, the audio or the drawing
-function plugFail(T,what,e){console.error(`[Orrery plugin ${T.name}] ${what}:`,e);const k=T.name+what;if(performance.now()-(plugFailT[k]||-1e9)>4000){plugFailT[k]=performance.now();flashMsg(`Plugin "${T.name}" failed in ${what}: ${e&&e.message||e}`)}}
+function plugFail(T,what,e){console.error(`[ORY-1 plugin ${T.name}] ${what}:`,e);const k=T.name+what;if(performance.now()-(plugFailT[k]||-1e9)>4000){plugFailT[k]=performance.now();flashMsg(`Plugin "${T.name}" failed in ${what}: ${e&&e.message||e}`)}}
 function plugCall(T,what,fn,fallback){try{return fn()}catch(e){plugFail(T,what,e);return fallback}}
 function plugPointer(n,type,wx,wy,e){const T=TYPES[n.type];if(!T||!T.pointerFn)return;const s=n.sz||1;
   plugCall(T,'onPointer',()=>T.pointerFn(n,{type,x:(wx-n.x)/s,y:(wy-n.y)/s,shift:e.shiftKey,alt:e.altKey,ctrl:e.ctrlKey||e.metaKey}));if(type==='up')save()}
@@ -2138,8 +2142,8 @@ function register(def,fromFile){
   prepType(T);TYPES[key]=T;if(plugFiles.has(file))plugFiles.get(file).push(key);else plugFiles.set(file,[key]);
   return key;
 }
-// the API a plugin sees, as window.Orrery and as the third argument of audio()
-const Orrery=window.Orrery={version:1,register:def=>register(def),
+// the API a plugin sees, as window.ORY and as the third argument of audio(); window.Orrery is the name from before ORY-1, kept so older plugins still work
+const Orrery=window.ORY=window.Orrery={version:1,register:def=>register(def),
   get audio(){return ctx},get bpm(){return bpm},get playing(){return playing},
   get key(){return{root,scale:scaleName,notes:SCALES[scaleName].slice()}},
   now:()=>now(),beat:()=>60/bpm,sixteenth,
@@ -2162,7 +2166,7 @@ async function loadPluginSource(file,code){
   (plugFiles.get(file)||[]).forEach(k=>plugDrop.add(k));plugFiles.set(file,[]);plugErr.delete(file);loadingFile=file;
   const url=URL.createObjectURL(new Blob([code],{type:'text/javascript'}));
   try{const mod=await import(url),d=mod.default;(Array.isArray(d)?d:d?[d]:[]).forEach(x=>register(x,file))}
-  catch(e){plugErr.set(file,e.message||String(e));console.error(`[Orrery] plugin ${file}:`,e)}
+  catch(e){plugErr.set(file,e.message||String(e));console.error(`[ORY-1] plugin ${file}:`,e)}
   finally{loadingFile=null;URL.revokeObjectURL(url)}
 }
 function forgetPlugin(file){(plugFiles.get(file)||[]).forEach(k=>plugDrop.add(k));plugFiles.delete(file);plugErr.delete(file)}

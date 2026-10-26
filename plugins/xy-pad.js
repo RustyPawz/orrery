@@ -1,4 +1,4 @@
-// XY Pad: an example Orrery plugin. A square you drag in; its X and Y are two modulation outputs.
+// XY Pad: an example ORY-1 plugin. A square you drag in; its X and Y are two modulation outputs.
 // Shows a free-form shape (not a circle), drawing it yourself, pointer input, and data saved with the song.
 const SIZE = 140, PAD = 12;
 
@@ -39,18 +39,18 @@ export default {
 
   draw(g, node, t, { color }) {
     const half = SIZE / 2 - PAD;
-    g.strokeStyle = Orrery.alpha(color, 0.18);
+    g.strokeStyle = ORY.alpha(color, 0.18);
     g.lineWidth = 1;
     for (let i = -2; i <= 2; i++) {
       g.beginPath(); g.moveTo(i * half / 2, -half); g.lineTo(i * half / 2, half); g.stroke();
       g.beginPath(); g.moveTo(-half, i * half / 2); g.lineTo(half, i * half / 2); g.stroke();
     }
     const px = (node.st.x ?? node.data.x) * half, py = -(node.st.y ?? node.data.y) * half;
-    g.strokeStyle = Orrery.alpha(color, 0.5);
+    g.strokeStyle = ORY.alpha(color, 0.5);
     g.beginPath(); g.moveTo(px, -half); g.lineTo(px, half); g.moveTo(-half, py); g.lineTo(half, py); g.stroke();
     g.fillStyle = color;
     g.beginPath(); g.arc(px, py, 7, 0, Math.PI * 2); g.fill();
-    g.fillStyle = Orrery.alpha(color, 0.6);
+    g.fillStyle = ORY.alpha(color, 0.6);
     g.font = '9px "IBM Plex Mono", monospace';
     g.fillText('drag', -half, -half - 2);
   },

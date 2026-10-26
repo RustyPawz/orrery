@@ -1,4 +1,4 @@
-// Sine Bell: an example Orrery plugin. A voice made of four inharmonic sine partials, like a small bell.
+// Sine Bell: an example ORY-1 plugin. A voice made of four inharmonic sine partials, like a small bell.
 // Shows a plugin with its own audio, notes that follow the key, and a modulation output.
 const PARTIALS = [[1, 1], [2.76, 0.5], [5.4, 0.25], [8.93, 0.12]]; // ratio, loudness
 
@@ -26,10 +26,10 @@ export default {
   },
 
   onEvent(node, port, ev) {
-    const ctx = Orrery.audio;
+    const ctx = ORY.audio;
     node.st.hit = ev.t;
     if (!ctx || !node.au) return;
-    const p = node.p, midi = Orrery.degreeToMidi(ev.deg, 60) + 12 * p.octave, f = Orrery.midiToFreq(midi);
+    const p = node.p, midi = ORY.degreeToMidi(ev.deg, 60) + 12 * p.octave, f = ORY.midiToFreq(midi);
     PARTIALS.forEach(([ratio, amp], i) => {
       if (f * ratio > 16000) return;
       const o = ctx.createOscillator(), g = ctx.createGain();
@@ -41,7 +41,7 @@ export default {
       o.connect(g); g.connect(node.au.output);
       o.start(ev.t); o.stop(ev.t + dec * 1.5 + 0.1);
     });
-    Orrery.trail(node, ev.t, midi, p.decay);
+    ORY.trail(node, ev.t, midi, p.decay);
   },
 
   // the env output: how loud the last strike still is
@@ -51,7 +51,7 @@ export default {
   },
 
   draw(g, node, t, { color }) {
-    const v = this.modulate(node, 'env', Orrery.now());
+    const v = this.modulate(node, 'env', ORY.now());
     g.strokeStyle = color;
     g.lineWidth = 1.6;
     g.beginPath();

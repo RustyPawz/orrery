@@ -1,12 +1,14 @@
-# Orrery
+# ORY-1
 
-![Orrery running the Crypt demo patch](preview.png)
+*Formerly called Orrery.*
+
+![ORY-1 running the Crypt demo patch](preview.png)
 
 **Play it: <https://rustypawz.github.io/orrery/play/>** · website: <https://rustypawz.github.io/orrery/> · or build the desktop app (see [Desktop app](#desktop-app)).
 
 The repository holds the website ([`index.html`](index.html), with renders and demo recordings in [`assets/`](assets)) and the app itself ([`play/index.html`](play/index.html)), which is also what the desktop app loads.
 
-Orrery is a generative modular music studio that runs in your browser or as a desktop app. You drop modules onto a canvas, wire them together, and the patch plays itself: clocks fire pulses, sequencers and chord modules pick notes, synths, drums and samplers sound them, and modulation keeps reshaping everything over time. Every event travels visibly down its wire, so you can watch why each note happened.
+ORY-1 is a generative modular music studio that runs in your browser or as a desktop app. You drop modules onto a canvas, wire them together, and the patch plays itself: clocks fire pulses, sequencers and chord modules pick notes, synths, drums and samplers sound them, and modulation keeps reshaping everything over time. Every event travels visibly down its wire, so you can watch why each note happened.
 
 It's a companion to the [RedtailWorks FM-1 firmwares](https://rustypawz.github.io/fm1-HYP1/). A [RedtailWorks](https://www.redtail.works) project.
 
@@ -67,18 +69,18 @@ MIDI needs Chrome or Edge (Web MIDI), or the desktop app. Everything else works 
 
 ## Desktop app
 
-The desktop app is the same Orrery in its own window, with a plugins folder. Build an installer from this repository:
+The desktop app is the same ORY-1 in its own window, with a plugins folder. Build an installer from this repository:
 
 ```bash
 npm install
 npm run dist:win     # or dist:mac / dist:linux, on that system
 ```
 
-The installer lands in `dist/`. It puts an Orrery shortcut on the desktop and in the Start menu. `npm start` runs the app straight from the source.
+The installer lands in `dist/`. It puts an ORY-1 shortcut on the desktop and in the Start menu. `npm start` runs the app straight from the source.
 
 ### Samples folder
 
-Drop audio files into `Documents/Orrery/samples` (**File → Open Samples Folder**), loose or in subfolders. They appear in the Rack under **Sample folder**, grouped by subfolder, and the list updates as you add or remove files.
+Drop audio files into `Documents/ORY-1/samples` (**File → Open Samples Folder**), loose or in subfolders. They appear in the Rack under **Sample folder**, grouped by subfolder, and the list updates as you add or remove files.
 
 - Click a sample to add a Sampler with it. If a Sampler or Cloud is selected, the click swaps that module's sound instead.
 - Audio you import or drop onto the canvas is saved into `samples/Imported`, so all your sounds stay in one place.
@@ -86,7 +88,7 @@ Drop audio files into `Documents/Orrery/samples` (**File → Open Samples Folder
 
 ## Plugins
 
-Plugins add new module types. Each one is a single `.js` file. In the desktop app, drop it into `Documents/Orrery/plugins` (**File → Open Plugins Folder**); saving a file there reloads it live. On the website, use **Settings → Plugins → Add plugin file…**.
+Plugins add new module types. Each one is a single `.js` file. In the desktop app, drop it into `Documents/ORY-1/plugins` (**File → Open Plugins Folder**); saving a file there reloads it live. On the website, use **Settings → Plugins → Add plugin file…**.
 
 A plugin can be:
 
