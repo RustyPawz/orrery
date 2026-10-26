@@ -219,7 +219,10 @@ const RND_L=['clocked','1/16','1/8','1/4','1/2','1 bar','2 bars','4 bars'],RND_B
 const MODC={lfo:'#ff7ad9',env:'#ffa3ef',rnd:'#d38cff',macro:'#f2d9ff',follow:'#ff93b8'};
 
 /* ---------- audio core ---------- */
-let ctx=null,directBus,master,ana,anaBuf,noiseBuf,playing=false,t0=0;
+let ctx=null,directBus,master,ana,anaBuf,noiseBuf,playing=false,t0=0,t0Due=false;
+// the beat grid restarts on the next scheduling pass, timed from when that pass actually runs: resuming audio and the
+// 25 ms tick both take a moment, and a start time set any earlier could already be past, skipping the first beat
+const restartGrid=()=>{t0Due=true};
 const G=v=>{const x=ctx.createGain();x.gain.value=v;return x};
 const sm=(prm,v)=>prm.setTargetAtTime(v,ctx.currentTime,.03);
 const filt=(type,f,q)=>{const b=ctx.createBiquadFilter();b.type=type;b.frequency.value=f;b.Q.value=q??.7;return b};
@@ -245,7 +248,7 @@ function initAudio(){
 // a new engine mode needs a new AudioContext: rebuild every module's audio on it, keeping the patch and play state
 async function restartAudio(){
   if(!ctx)return;const was=playing;nodes.forEach(killAu);wires.forEach(w=>{w.g=null});try{await ctx.close()}catch(e){}ctx=null;initAudio();
-  if(was){await ctx.resume();t0=ctx.currentTime+.05;nodes.forEach(n=>{n.st={}})}else await ctx.suspend();
+  if(was){await ctx.resume();restartGrid();nodes.forEach(n=>{n.st={}})}else await ctx.suspend();
 }
 // audio health: where the browser counts real dropouts (playbackStats) or reports audio-thread load (renderCapacity), use it to warn
 let audioLoad=null,loadWarnT=0,dropWatch=null;
@@ -1089,6 +1092,7 @@ function clearNext(n){for(const k in n.st)if(k.startsWith('nx_'))n.st[k]=null}
 function sched(){
   if(!playing||!ctx)return;
   const now=ctx.currentTime,spb=60/bpm,HZ=now+(document.hidden?1.5:(AUD[setv.audio]||AUD.balanced).ahead);budget=900;
+  if(t0Due){t0=now+.05;t0Due=false}
   for(const n of nodes){const T=TYPES[n.type];
     // modules that make their own timing (generators, grains, risers) schedule up to the same horizon as the clocks
     if(T.ahead)T.ahead(n,now,HZ,(port,ev)=>{n.fires.push(ev.t);emit(n,port,{deg:0,vel:.8,...ev},0)});
@@ -1107,7 +1111,7 @@ try{const tw=new Worker(URL.createObjectURL(new Blob(["setInterval(()=>postMessa
 function setBpm(v){
   bpm=Math.min(220,Math.max(40,Math.round(v)));
   nodes.forEach(n=>{if(n.type==='clock')n.p.bpm=bpm;clearNext(n);if(n.au&&n.au.bpm&&n.au.set)n.au.set(n.p)});
-  if(ctx)t0=ctx.currentTime+.02;syncUI();
+  if(ctx)restartGrid();syncUI();
 }
 function setKey(s,r){scaleName=s;root=r;nodes.forEach(n=>{if(n.type==='key'){n.p.scale=SCALE_NAMES.indexOf(s);n.p.root=r}});syncUI()}
 
@@ -1142,7 +1146,7 @@ function addSong(name,data){const id='s'+Date.now().toString(36)+Math.random().t
 function openSong(id){
   if(!lib.songs[id])return;if(lib.cur&&lib.cur!==id&&lib.songs[lib.cur])flushSave();
   lib.cur=id;applyPatch(lib.songs[id].data);rewire();setBpm(bpm);syncUI();fit();loadSamples();
-  if(ctx&&playing){t0=ctx.currentTime+.05;nodes.forEach(n=>{n.st={}})}
+  if(ctx&&playing){restartGrid();nodes.forEach(n=>{n.st={}})}
   writeLib();refreshSongs();renderMidi();
 }
 function bootSongs(){
@@ -1906,7 +1910,7 @@ SCALE_NAMES.forEach(k=>scaleSel.add(new Option(k,k)));ROOTS.forEach((k,i)=>rootS
 function syncUI(){bpmIn.value=bpm;scaleSel.value=scaleName;rootSel.value=root}
 playBtn.onclick=async()=>{
   if(!ctx)initAudio();
-  if(!playing){await ctx.resume();t0=ctx.currentTime+.05;nodes.forEach(n=>{n.st={}});playing=true;playBtn.textContent='Stop';playBtn.classList.add('on')}
+  if(!playing){await ctx.resume();restartGrid();nodes.forEach(n=>{n.st={}});playing=true;playBtn.textContent='Stop';playBtn.classList.add('on')}
   else{playing=false;await ctx.suspend();playBtn.textContent='Play';playBtn.classList.remove('on')}
   window.orreryDesktop?.setPlaying?.(playing);// the desktop app keeps the computer awake while music plays
 };
