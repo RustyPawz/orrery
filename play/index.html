@@ -242,7 +242,8 @@ function lfo(rate,amt,prm,type){const o=ctx.createOscillator();o.type=type||'sin
 function initAudio(){
   const AC=window.AudioContext||window.webkitAudioContext;try{ctx=new AC({latencyHint:(AUD[setv.audio]||AUD.balanced).hint})}catch(e){ctx=new AC()}
   watchLoad();
-  master=G(.85);const lim=ctx.createDynamicsCompressor();lim.threshold.value=-10;lim.ratio.value=8;lim.attack.value=.003;
+  // a safety limiter: it only catches peaks near clipping, so normal levels pass untouched instead of being squashed
+  master=G(.85);const lim=ctx.createDynamicsCompressor();lim.threshold.value=-3;lim.knee.value=1;lim.ratio.value=20;lim.attack.value=.002;lim.release.value=.15;
   ana=ctx.createAnalyser();ana.fftSize=1024;anaBuf=new Float32Array(1024);
   master.connect(lim);lim.connect(ana);ana.connect(ctx.destination);
   directBus=G(1);directBus.connect(master);
@@ -420,8 +421,20 @@ async function importFile(file,x,y,target){
 async function loadSamples(){
   for(const n of nodes){if((n.type!=='sampler'&&n.type!=='cloud')||!n.sid||SAMPLES[n.sid])continue;await ensureSample(n.sid)}
 }
+// loop speed 'original': the region loops continuously at the file's own speed, however fast the patch runs; the first
+// trigger starts it and later ones leave it playing. Stop, a new song or removing the module ends it.
+function stopFree(A){if(A&&A.free){try{A.free.src.stop()}catch(e){}A.free=null}}
+function samplerFree(n,ev){
+  const S=SAMPLES[n.sid],p=n.p,buf=S.buf,D=buf.duration,t=ev.t,off=p.start*D,end=off+Math.max(.01,p.len*(D-off));
+  if(n.au.free&&n.st.freeOn)return null;stopFree(n.au);n.st.freeOn=true;
+  const src=ctx.createBufferSource(),g=G(0),vel=ev.vel??.8,rate=Math.pow(2,p.tune/12);src.buffer=buf;src.loop=true;src.loopStart=off;src.loopEnd=end;src.playbackRate.value=rate;
+  g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(vel*p.level,t+Math.max(.01,p.attack));src.connect(g);g.connect(n.au.out);n.au.pitchBus.connect(src.detune);src.start(t,off);
+  n.au.free={src,g,vel};(n.st.plays||(n.st.plays=[])).push({t,a0:off/D,a1:end/D,play:(end-off)/rate});
+  return{midi:60+root+degToSemi(ev.deg),play:(end-off)/rate};
+}
 function samplerHit(n,ev){
   const S=SAMPLES[n.sid];if(!S||!n.au)return;
+  if(n.p.mode===2&&n.p.speed===1)return samplerFree(n,ev);
   const p=n.p,buf=S.buf,D=buf.duration,t=ev.t;
   let off=p.start*D,dur=Math.max(.01,p.len*(D-off)),rate=Math.pow(2,p.tune/12),midi=null;
   if(p.mode===1){midi=60+root+12*p.oct+degToSemi(ev.deg);rate*=Math.pow(2,(midi-p.rootNote)/12)}
@@ -642,8 +655,11 @@ const TYPES={
     params:[P('start','start',0,.99,0),P('len','length',.01,1,1),P('release','release',.005,4,.05,.005,sec),P('level','level',0,1,.8),
       P('mode','mode',0,3,0,1,L(SAMPLER_MODES),{sat:1}),P('rootNote','root note',24,96,60,1,noteName,{sat:1,s:'root'}),P('tune','tune',-24,24,0,1,v=>sgn(v)+'st',{sat:1}),
       P('oct','octave',-3,3,0,1,sgn,{sat:1,s:'oct'}),P('bars','loop bars',0,3,1,1,v=>LOOP_BARS[v]+' bar',{sat:1,s:'bars'}),P('slices','slices',0,3,1,1,v=>SLICES[v]+' sl',{sat:1,s:'slice'}),
-      P('attack','attack',0,1,.002,.001,sec,{sat:1,s:'atk'})],
-    build:voiceBuild,fast:{level:LEVEL_FAST,tune:{to:n=>n.au.pitchBus,scale:4800}},
+      P('attack','attack',0,1,.002,.001,sec,{sat:1,s:'atk'}),P('speed','loop speed',0,1,0,1,L(['tempo','original']),{sat:1,s:'speed'})],
+    // a loop at its original speed runs on its own, so it needs stopping with the module
+    build:()=>{const A=voiceBuild();A.stop=()=>stopFree(A);return A},fast:{level:LEVEL_FAST,tune:{to:n=>n.au.pitchBus,scale:4800}},
+    onParam(n,k){const F=n.au&&n.au.free;if(!F)return;if((k==='mode'||k==='speed')&&!(n.p.mode===2&&n.p.speed===1)){stopFree(n.au);return}
+      if(k==='level')F.g.gain.setTargetAtTime(F.vel*n.p.level,ctx.currentTime,.05);if(k==='tune')F.src.playbackRate.setTargetAtTime(Math.pow(2,n.p.tune/12),ctx.currentTime,.05)},
     on(n,port,ev,emit){emit('hit',ev);if(!ctx)return;const r=samplerHit(n,ev);if(r){addNote(n,ev.t,r.midi,.3);voiceEnv(n,ev.t,ev.vel*n.p.level,n.p.attack,Math.min(2,r.play))}}},
   // a voice that never retriggers: notes glide it to a new pitch, and it sounds for as long as it's held open
   drone:{name:'Drone',cat:'Voices',color:'#ff9470',r:56,glyph:'drone',...voiceIO,
@@ -2065,7 +2081,7 @@ function syncUI(){bpmIn.value=bpm;scaleSel.value=scaleName;rootSel.value=root}
 playBtn.onclick=async()=>{
   if(!ctx)initAudio();
   if(!playing){await ctx.resume();restartGrid();nodes.forEach(n=>{n.st={}});playing=true;playBtn.textContent='Stop';playBtn.classList.add('on')}
-  else{playing=false;await ctx.suspend();playBtn.textContent='Play';playBtn.classList.remove('on')}
+  else{playing=false;nodes.forEach(n=>stopFree(n.au));await ctx.suspend();playBtn.textContent='Play';playBtn.classList.remove('on')}
   window.orreryDesktop?.setPlaying?.(playing);// the desktop app keeps the computer awake while music plays
 };
 bpmIn.onchange=()=>{setBpm(+bpmIn.value||104);save()};
