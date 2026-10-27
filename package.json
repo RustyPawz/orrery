@@ -1,7 +1,7 @@
 {
   "name": "ory-1",
   "productName": "ORY-1",
-  "version": "1.0.0",
+  "version": "0.9.0-beta.1",
   "description": "A generative modular music studio: wire clocks, sequencers, voices and modulation into patches that play themselves.",
   "main": "desktop/main.js",
   "author": "RedtailWorks",
