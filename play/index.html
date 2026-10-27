@@ -1549,10 +1549,11 @@ const DEMOS=[
 
 /* ---------- display settings (per browser, never per song) ---------- */
 const SET_KEY='orrery-settings-v1',calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
-const SET_DEF={pulses:!calm,wireAnim:!calm,glow:true,trail:true,backdrop:true,sharp:true,fps:60,audio:'balanced',fx:'high',voices:16,bgDim:.55};
-const SET_LOW={pulses:false,wireAnim:false,glow:false,trail:false,backdrop:false,sharp:false,fps:30,audio:'stable',fx:'eco',voices:8,bgDim:.55};
-const SET_UI=[['pulses','Moving pulses on wires'],['wireAnim','Crawling wire and outline dashes'],['glow','Glow around firing modules'],['trail','Note trail behind the patch'],
-  ['backdrop','Background grid and halo'],['sharp','Sharp graphics on high-res screens'],['fps','Frame rate',[[60,'60 fps'],[30,'30 fps'],[15,'15 fps']]],
+const SET_DEF={pulses:!calm,wireAnim:!calm,glow:true,trail:true,backdrop:true,grid:true,secAlpha:1,sharp:true,fps:60,audio:'balanced',fx:'high',voices:16,bgDim:.55};
+const SET_LOW={pulses:false,wireAnim:false,glow:false,trail:false,backdrop:false,grid:false,secAlpha:1,sharp:false,fps:30,audio:'stable',fx:'eco',voices:8,bgDim:.55};
+// 'backdrop' is the halo's key from when it shared a switch with the grid, so a saved choice to turn it off still holds
+const SET_UI=[['pulses','Moving pulses on wires'],['wireAnim','Crawling wire and outline dashes'],['glow','Glow around firing modules'],['trail','Scrolling note trail behind the patch'],
+  ['backdrop','Halo that glows and shifts colour with the music'],['grid','Background grid lines'],['secAlpha','Section circles',[[1,'Full'],[.6,'Soft'],[.3,'Faint'],[0,'Labels only']]],['sharp','Sharp graphics on high-res screens'],['fps','Frame rate',[[60,'60 fps'],[30,'30 fps'],[15,'15 fps']]],
   ['bgDim','Background image dimming',[[0,'None'],[.3,'Light'],[.55,'Medium'],[.75,'Strong']]]];
 const AUD_UI=[['audio','Engine',[['stable','Stable'],['balanced','Balanced'],['responsive','Low latency']]],['fx','Effects quality',[['high','High'],['eco','Eco']]],
   ['voices','Notes per instrument',[[8,'8'],[16,'16'],[32,'32'],[64,'64']]]];
@@ -1651,10 +1652,10 @@ function drawBG(t){
   if(setv.backdrop){
     const rg=g.createRadialGradient(cx,cy,R*.1,cx,cy,R*1.25);rg.addColorStop(0,`rgba(${40+meter*40},20,${70+meter*30},.55)`);rg.addColorStop(1,'rgba(10,6,20,0)');
     g.fillStyle=rg;g.fillRect(0,0,W,H);
-    g.strokeStyle='rgba(120,90,200,.07)';g.lineWidth=1;
-    for(let x=(view.x%56+56)%56;x<W;x+=56){g.beginPath();g.moveTo(x+.5,0);g.lineTo(x+.5,H);g.stroke()}
-    g.strokeStyle=`rgba(150,120,230,${.1+meter*.25})`;g.beginPath();g.arc(cx,cy,R,0,TAU);g.stroke();
+    g.strokeStyle=`rgba(150,120,230,${.1+meter*.25})`;g.lineWidth=1;g.beginPath();g.arc(cx,cy,R,0,TAU);g.stroke();
   }
+  if(setv.grid){g.strokeStyle='rgba(120,90,200,.07)';g.lineWidth=1;
+    for(let x=(view.x%56+56)%56;x<W;x+=56){g.beginPath();g.moveTo(x+.5,0);g.lineTo(x+.5,H);g.stroke()}}
   if(!setv.trail)return;
   const pps=70;
   for(const nt of notes){const x=W-40-(t-nt.t)*pps;if(x<-200||nt.t>t)continue;
@@ -1859,8 +1860,11 @@ function drawSampler(n,t,c){
 }
 function drawSections(t){
   for(const S of sections){const c=SEC_COLORS[S.c%SEC_COLORS.length],on=S===secSel,rimHot=(hover&&hover.s===S&&hover.kind==='secRim')||(drag&&drag.s===S&&drag.kind==='secSize');
-    g.fillStyle=alpha(c,on?.07:.045);g.beginPath();g.arc(S.x,S.y,S.r,0,TAU);g.fill();
-    g.setLineDash([6,8]);g.lineDashOffset=on?-dashT(t)*10:0;g.strokeStyle=alpha(c,rimHot?.95:on?.75:.35);g.lineWidth=rimHot?3:on?2:1.4;g.stroke();g.setLineDash([]);
+    // the circle's fill and outline follow the Section circles setting (the selected or hovered one stays visible to edit);
+    // the name label always stays readable, so sections can still be grabbed
+    const sa=on||rimHot?Math.max(setv.secAlpha,.6):setv.secAlpha;g.beginPath();g.arc(S.x,S.y,S.r,0,TAU);
+    if(sa>0){g.fillStyle=alpha(c,(on?.07:.045)*sa);g.fill();
+      g.setLineDash([6,8]);g.lineDashOffset=on?-dashT(t)*10:0;g.strokeStyle=alpha(c,(rimHot?.95:on?.75:.35)*sa);g.lineWidth=rimHot?3:on?2:1.4;g.stroke();g.setLineDash([])}
     g.font='11px "Michroma","Eurostile",sans-serif';const label=(S.name||'Section').toUpperCase();S.lw=g.measureText(label).width+label.length*1.2;
     const P=secPill(S),rr=P.h/2;
     g.fillStyle='#120a22';g.strokeStyle=alpha(c,on?.9:.55);g.lineWidth=1.2;g.beginPath();
