@@ -2,17 +2,28 @@
 const { app, BrowserWindow, ipcMain, shell, Menu, session, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('child_process');
 
 // keep the audio scheduler at full speed even when the window is hidden or minimised
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 app.commandLine.appendSwitch('disable-background-timer-throttling');
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+// VST3 modules share memory with their AudioWorklet. The page stays on file:// (its saved songs belong to that origin),
+// where cross-origin isolation can't be switched on, so SharedArrayBuffer is enabled directly.
+app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 
 // The app was called Orrery before ORY-1. Its saved songs and settings stay where they are: Chromium creates the
 // new userData folder before this script runs, so it can't be moved into place, and nobody sees its name anyway.
 // The Documents folder people do see, so that one moves to the new name; if it can't (a file in it is open), the old one is used.
 const oldData = path.join(app.getPath('appData'), 'Orrery');
-if (fs.existsSync(oldData)) app.setPath('userData', oldData);
+// ORY1_PROFILE=<folder> runs with songs, settings and a Documents folder of its own, so a development build can be
+// tried while the real ORY-1 is open without touching its songs
+const profile = process.env.ORY1_PROFILE;
+if (profile) {
+  app.setPath('userData', path.join(profile, 'userData'));
+  app.setPath('documents', path.join(profile, 'Documents'));
+  fs.mkdirSync(app.getPath('documents'), { recursive: true });
+} else if (fs.existsSync(oldData)) app.setPath('userData', oldData);
 function moveFolder(from, to) {
   if (fs.existsSync(from) && !fs.existsSync(to)) { try { fs.renameSync(from, to); } catch (e) { return from; } }
   return to;
@@ -158,6 +169,118 @@ function readLibrary() {
   try { return fs.readFileSync(libraryFile(), 'utf8'); } catch (e) { return null; }
 }
 
+// ---------- VST3 ----------
+// Plugins run in ory1-vsthost.exe, a helper process: a plugin that crashes takes the helper down, not ORY-1.
+// Scanning runs one short-lived helper per plugin file, so one that hangs or crashes while scanned is only skipped.
+const nativeDir = app.isPackaged ? path.join(process.resourcesPath, 'native') : path.join(__dirname, '..', 'native', 'bin');
+const hostExe = path.join(nativeDir, 'ory1-vsthost.exe');
+const vstAvailable = () => process.platform === 'win32' && fs.existsSync(hostExe);
+let vstDir = '';
+function prepareVstDir() { vstDir = path.join(docsDir, 'VST3'); fs.mkdirSync(vstDir, { recursive: true }); }
+function vstFolders() {
+  const common = process.env.CommonProgramFiles || 'C:\\Program Files\\Common Files';
+  const local = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Common', 'VST3') : null;
+  return [path.join(common, 'VST3'), local, vstDir].filter(Boolean);
+}
+// every .vst3 bundle or file in the folders, looking inside ordinary subfolders (vendors often add one) but not inside bundles
+function findVst3() {
+  const out = [];
+  const walk = (dir, depth) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.name.toLowerCase().endsWith('.vst3')) out.push(full);
+      else if (e.isDirectory() && depth < 3) walk(full, depth + 1);
+    }
+  };
+  for (const d of vstFolders()) walk(d, 0);
+  return [...new Set(out)];
+}
+// a bundle counts as changed when its binary does
+function vstStamp(p) {
+  const bin = path.join(p, 'Contents', 'x86_64-win', path.basename(p));
+  for (const f of [bin, p]) { try { const s = fs.statSync(f); if (s.isFile()) return s.size + ':' + s.mtimeMs; } catch (e) { /* try the next */ } }
+  try { return 'dir:' + fs.statSync(p).mtimeMs; } catch (e) { return ''; }
+}
+const vstCacheFile = () => path.join(app.getPath('userData'), 'vst3-cache.json');
+let vstCache = null;
+function scanOne(p) {
+  return new Promise(resolve => {
+    let out = '', done = false;
+    const child = spawn(hostExe, ['--scan', p], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+    const finish = r => { if (!done) { done = true; clearTimeout(timer); resolve(r); } };
+    const timer = setTimeout(() => { try { child.kill(); } catch (e) { /* already gone */ } finish({ ok: false, error: 'took too long to scan' }); }, 30000);
+    child.stdout.on('data', d => { out += d; });
+    child.on('error', e => finish({ ok: false, error: e.message }));
+    child.on('exit', code => {
+      try { finish(JSON.parse(out.trim().split('\n').pop())); } catch (e) { finish({ ok: false, error: `crashed while scanning (${code})` }); }
+    });
+  });
+}
+async function scanVst(force) {
+  if (!vstAvailable()) return [];
+  if (!vstCache) { try { vstCache = JSON.parse(fs.readFileSync(vstCacheFile(), 'utf8')); } catch (e) { vstCache = {}; } }
+  const paths = findVst3(), todo = [];
+  for (const p of paths) { const st = vstStamp(p); if (force || !vstCache[p] || vstCache[p].stamp !== st) todo.push([p, st]); }
+  for (const p of Object.keys(vstCache)) if (!paths.includes(p)) delete vstCache[p];
+  // a few at a time: loading a big plugin can take seconds
+  const queue = todo.slice();
+  await Promise.all(Array.from({ length: 3 }, async () => {
+    while (queue.length) { const [p, stamp] = queue.shift(); const r = await scanOne(p); vstCache[p] = { stamp, classes: r.ok ? r.classes : [], error: r.ok ? null : r.error }; }
+  }));
+  if (todo.length) { try { fs.writeFileSync(vstCacheFile(), JSON.stringify(vstCache, null, 1)); } catch (e) { /* scanned again next time */ } }
+  const list = [];
+  for (const [p, entry] of Object.entries(vstCache)) for (const c of entry.classes) {
+    list.push({ path: p, cid: c.cid, name: c.name, vendor: c.vendor, version: c.version, sub: c.sub, instrument: /instrument/i.test(c.sub || '') });
+  }
+  return list.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+}
+const vstBlocked = () => Object.entries(vstCache || {}).filter(([, e]) => e.error).map(([p, e]) => ({ path: p, error: e.error }));
+
+// the hosting helper: started when a song first needs it, and again after a crash
+let vstHost = null;
+function startVstHost() {
+  if (vstHost) return vstHost.ready;
+  const shm = `Local\\ORY1-vst-${process.pid}-${Date.now()}`;
+  const child = spawn(hostExe, ['--host', shm], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const h = { child, shm, waiting: new Map(), nextId: 1, buf: '' };
+  h.ready = new Promise((resolve, reject) => { h.resolve = resolve; h.reject = reject; });
+  child.stdout.on('data', d => {
+    h.buf += d;
+    let i;
+    while ((i = h.buf.indexOf('\n')) >= 0) {
+      let msg = null;
+      try { msg = JSON.parse(h.buf.slice(0, i)); } catch (e) { /* not ours */ }
+      h.buf = h.buf.slice(i + 1);
+      if (!msg) continue;
+      if (msg.event === 'ready') h.resolve({ shm });
+      else if (msg.event) win && win.webContents.send('vst:event', msg);
+      else if (h.waiting.has(msg.id)) { h.waiting.get(msg.id)(msg); h.waiting.delete(msg.id); }
+    }
+  });
+  child.stderr.on('data', d => process.stdout.write('[vsthost] ' + d));
+  const gone = why => {
+    if (vstHost !== h) return;
+    vstHost = null;
+    for (const res of h.waiting.values()) res({ error: why });
+    h.reject(new Error(why));
+    win && win.webContents.send('vst:event', { event: 'exit', why });
+  };
+  child.on('error', e => gone(e.message));
+  child.on('exit', code => gone(`the VST3 helper stopped (${code})`));
+  h.ready.catch(() => {});
+  vstHost = h;
+  return h.ready;
+}
+function vstCall(cmd) {
+  if (!vstHost) return Promise.resolve({ error: 'the VST3 helper is not running' });
+  const h = vstHost, id = h.nextId++;
+  return new Promise(resolve => { h.waiting.set(id, resolve); h.child.stdin.write(JSON.stringify({ ...cmd, id }) + '\n'); });
+}
+// closing stdin is the helper's cue to shut its plugins down and exit by itself
+app.on('will-quit', () => { if (vstHost) { try { vstHost.child.stdin.end(); } catch (e) { /* gone */ } } });
+
 // editors often write a file in several steps, so wait for the folder to settle before telling the page
 let watchTimer = null;
 function watchPlugins() {
@@ -193,7 +316,8 @@ function createWindow() {
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true, nodeIntegration: false, sandbox: true,
+      // the preload loads the VST3 bridge addon, which needs Node; the page itself still has none (context isolation)
+      contextIsolation: true, nodeIntegration: false, sandbox: false,
       backgroundThrottling: false,
     },
   });
@@ -213,6 +337,7 @@ function buildMenu() {
     { label: 'File', submenu: [
       { label: 'Open Samples Folder', click: () => shell.openPath(samplesDir) },
       { label: 'Open Plugins Folder', click: () => shell.openPath(pluginsDir) },
+      ...(vstAvailable() ? [{ label: 'Open VST3 Folder', click: () => shell.openPath(vstDir) }] : []),
       { label: 'Reload Plugins', accelerator: 'CmdOrCtrl+Shift+R', click: send('plugins:changed') },
       { type: 'separator' },
       process.platform === 'darwin' ? { role: 'close' } : { role: 'quit' },
@@ -237,6 +362,12 @@ ipcMain.handle('samples:list', () => listSamples());
 ipcMain.handle('samples:read', (e, rel) => readSample(rel));
 ipcMain.handle('samples:save', (e, name, bytes) => saveSample(name, bytes));
 ipcMain.handle('samples:open', () => shell.openPath(samplesDir));
+ipcMain.handle('vst:available', () => vstAvailable());
+ipcMain.handle('vst:list', (e, force) => scanVst(!!force));
+ipcMain.handle('vst:blocked', () => vstBlocked());
+ipcMain.handle('vst:start', () => startVstHost().catch(err => ({ error: err.message })));
+ipcMain.handle('vst:call', (e, cmd) => vstCall(cmd));
+ipcMain.handle('vst:open', () => shell.openPath(vstDir));
 ipcMain.on('audio:playing', (e, on) => { setPlaying(!!on); optOutOfThrottling(); });
 ipcMain.on('library:read', e => { e.returnValue = readLibrary(); });
 ipcMain.on('library:write', (e, text) => { libraryText = String(text); clearTimeout(libraryTimer); libraryTimer = setTimeout(writeLibrary, 1000); });
@@ -250,6 +381,7 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionCheckHandler((wc, perm) => allowed.has(perm));
   preparePluginsDir();
   prepareSamplesDir();
+  prepareVstDir();
   watchPlugins();
   watchSamples();
   buildMenu();

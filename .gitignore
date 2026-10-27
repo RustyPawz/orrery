@@ -1,2 +1,5 @@
 node_modules/
 dist/
+native/build/
+native/build-sdk/
+native/bin/

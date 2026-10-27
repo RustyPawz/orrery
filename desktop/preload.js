@@ -1,6 +1,20 @@
 // The only bridge between the page and the computer: the plugins and samples folders, word when either changes, and
 // the file copy of the song library.
 const { contextBridge, ipcRenderer } = require('electron');
+const path = require('path');
+
+// VST3: the bridge addon copies audio between each VST3 module's SharedArrayBuffer and the hosting helper.
+// The context bridge can't carry a SharedArrayBuffer, so the page posts it here with window.postMessage.
+let vstBridge = null, connected = null;
+try {
+  const dir = process.resourcesPath && !/node_modules[\\/]electron[\\/]dist/.test(process.resourcesPath)
+    ? path.join(process.resourcesPath, 'native') : path.join(__dirname, '..', 'native', 'bin');
+  vstBridge = require(path.join(dir, 'vstbridge.node'));
+} catch (e) { vstBridge = null; /* no VST3 modules: the Rack doesn't offer them */ }
+window.addEventListener('message', e => {
+  const m = e.source === window && e.data && e.data.oryVstAttach;
+  if (m && vstBridge && m.sab instanceof SharedArrayBuffer) vstBridge.attach(m.slot, new Uint8Array(m.sab));
+});
 
 contextBridge.exposeInMainWorld('orreryDesktop', {
   listPlugins: () => ipcRenderer.invoke('plugins:list'),
@@ -18,4 +32,22 @@ contextBridge.exposeInMainWorld('orreryDesktop', {
   // read once while the page starts, so it waits for the file; saves are sent and written in the background
   readLibrary: () => ipcRenderer.sendSync('library:read'),
   writeLibrary: text => ipcRenderer.send('library:write', String(text)),
+  // VST3 hosting (Windows): null when the helper or the bridge isn't there
+  vst: vstBridge ? {
+    available: () => ipcRenderer.invoke('vst:available'),
+    list: force => ipcRenderer.invoke('vst:list', !!force),
+    blocked: () => ipcRenderer.invoke('vst:blocked'),
+    openFolder: () => ipcRenderer.invoke('vst:open'),
+    // start the helper (if it isn't running) and connect the bridge to it
+    start: async () => {
+      const r = await ipcRenderer.invoke('vst:start');
+      if (!r || !r.shm) return { ok: false, error: r && r.error };
+      // connecting again drops every attached slot, so only a new helper gets a new connection
+      if (r.shm !== connected) { if (!vstBridge.connect(r.shm)) return { ok: false, error: 'could not connect to the VST3 helper' }; connected = r.shm; }
+      return { ok: true, shm: r.shm };
+    },
+    call: cmd => ipcRenderer.invoke('vst:call', cmd),
+    detach: slot => vstBridge.detach(slot),
+    onEvent: cb => ipcRenderer.on('vst:event', (e, msg) => cb(msg)),
+  } : null,
 });

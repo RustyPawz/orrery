@@ -1133,8 +1133,85 @@ Object.assign(TYPES,{
       if(m==='rain'){g2.fillStyle=alpha(warm,.15+lvl*.4);g2.beginPath();g2.ellipse(0,Y+H-10,60+lvl*80,6,0,0,TAU);g2.fill()}
       g2.restore()}},
 });
+/* ---------- VST3 (desktop app, Windows) ----------
+   A VST3 module's plugin runs in the desktop app's hosting helper. Its AudioWorklet swaps 128-frame blocks with the helper
+   through a SharedArrayBuffer (layout in native/shared/layout.h) and hears each block VST_D[mode] blocks after sending it.
+   Notes are scheduled ahead anyway, so they go out early by the same amount and land on time; audio through an effect is
+   that much late. On the website these types don't exist, so songs show them as placeholders and keep their data. */
+const VST=window.orreryDesktop&&window.orreryDesktop.vst||null;
+const VQ=128,VRING=64,VEVR=1024,VOFF={fr:64,in:64+VRING*8};VOFF.out=VOFF.in+VRING*2*VQ*4;VOFF.evF=VOFF.out+VRING*2*VQ*4;VOFF.evI=VOFF.evF+VEVR*8;VOFF.evV=VOFF.evI+VEVR*12;VOFF.size=VOFF.evV+VEVR*4;
+const VST_D={stable:16,balanced:8,responsive:6};
+const VEV={on:1,off:2,param:3,allOff:4,transport:5};
+let vstList=[],vstWkCtx=null,vstWkP=null;
+const VST_WORKLET=`const Q=${VQ},RING=${VRING};
+registerProcessor('ory-vst',class extends AudioWorkletProcessor{
+  constructor(){super();this.port.onmessage=e=>{if(e.data==='stop'){this.gone=true;return}const s=e.data;this.h=new Int32Array(s,0,16);this.fr=new Float64Array(s,${VOFF.fr},RING);this.inp=new Float32Array(s,${VOFF.in},RING*2*Q);this.out=new Float32Array(s,${VOFF.out},RING*2*Q);this.k=0}}
+  process(ins,outs){
+    if(this.gone)return false;const h=this.h;if(!h)return true;
+    const k=this.k,b=k%RING,D=Atomics.load(h,5),x=ins[0],o=outs[0],ib=b*2*Q;
+    this.fr[b]=currentFrame+D*Q;// the frame this block will be heard at
+    if(x&&x.length){this.inp.set(x[0],ib);this.inp.set(x[1]||x[0],ib+Q)}else this.inp.fill(0,ib,ib+2*Q);
+    Atomics.store(h,0,k+1);this.k=k+1;
+    const want=k-D;
+    if(want>=0&&Atomics.load(h,1)>want){const ob=(want%RING)*2*Q;o[0].set(this.out.subarray(ob,ob+Q));if(o[1])o[1].set(this.out.subarray(ob+Q,ob+2*Q))}
+    else if(want>=0)Atomics.add(h,4,1);// late: this block plays silence
+    return true}})`;
+function vstWorklet(){if(vstWkCtx!==ctx){vstWkCtx=ctx;vstWkP=ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([VST_WORKLET],{type:'text/javascript'})))}return vstWkP}
+// one event into the module's queue for the helper; frame -1 means straight away
+function vstEv(au,frame,type,a,b,v){const h=au.h,k=Atomics.load(h,2),i=k%VEVR;if(k-Atomics.load(h,3)>=VEVR)return;
+  au.evF[i]=frame;au.evI[i*3]=type;au.evI[i*3+1]=a;au.evI[i*3+2]=b;au.evV[i]=v;Atomics.store(h,2,k+1)}
+function vstBuild(n,fx){
+  const au={out:G(n.p.level),sig:G(1),inp:fx?G(1):null,slot:-1,state:'loading',
+    set(p){au.out.gain.value=p.level},
+    stop(){au.dead=true;if(au.wk){au.wk.port.postMessage('stop');try{au.wk.disconnect()}catch(e){}}
+      if(au.slot>=0){VST.detach(au.slot);VST.call({cmd:'unload',slot:au.slot})}}};
+  vstLoad(n,au);return au}
+async function vstLoad(n,au){
+  const info=n.data&&n.data.vst,c=ctx;if(!info){au.state='error';return}
+  const fail=e=>{au.state='error';au.err=e;flashMsg(`VST3 ${info.name}: ${e}`)};
+  const st=await VST.start();if(!st.ok)return fail(st.error||'the VST3 helper did not start');
+  await vstWorklet();if(au.dead)return;
+  const r=await VST.call({cmd:'load',path:info.path,cid:info.cid,sampleRate:c.sampleRate});
+  if(au.dead){if(!r.error)VST.call({cmd:'unload',slot:r.slot});return}
+  if(r.error)return fail(r.error);
+  au.slot=r.slot;au.latency=r.latency;au.params=r.params;info.name=r.name||info.name;
+  const sab=new SharedArrayBuffer(VOFF.size);au.h=new Int32Array(sab,0,16);
+  au.evF=new Float64Array(sab,VOFF.evF,VEVR);au.evI=new Int32Array(sab,VOFF.evI,VEVR*3);au.evV=new Float32Array(sab,VOFF.evV,VEVR);
+  au.h[5]=VST_D[setv.audio]||VST_D.balanced;
+  window.postMessage({oryVstAttach:{slot:r.slot,sab}},'*');// to the preload, which hands it to the bridge
+  const wk=new AudioWorkletNode(c,'ory-vst',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[2]});
+  wk.port.postMessage(sab);if(au.inp)au.inp.connect(wk);wk.connect(au.out);
+  au.wk=wk;au.state='ready';vstEv(au,-1,VEV.transport,playing?1:0,0,bpm);au.tp=playing;au.bpm=bpm}
+// a note: on now, off after its length (or the module's own length when the event has none)
+function vstNote(n,ev){
+  const au=n.au,len=ev.len||n.p.len,midi=Math.max(0,Math.min(127,48+root+degToSemi(ev.deg)+12*n.p.oct+n.p.semi));
+  if(au&&au.state==='ready'&&ctx){const sr=ctx.sampleRate,id=au.nid=((au.nid||0)+1)&0x7fffffff;
+    vstEv(au,ev.t*sr,VEV.on,midi,id,Math.max(0,Math.min(1,ev.vel??.8)));vstEv(au,(ev.t+len)*sr,VEV.off,midi,id,0)}
+  addNote(n,ev.t,midi,len);return midi}
+// Play and Stop, and tempo, go to the plugin; Stop also ends every note it's holding
+function vstTick(n){const au=n.au;if(!au||au.state!=='ready')return;
+  if(au.tp!==playing||au.bpm!==bpm){if(au.tp&&!playing)vstEv(au,-1,VEV.allOff,0,0,0);vstEv(au,-1,VEV.transport,playing?1:0,0,bpm);au.tp=playing;au.bpm=bpm}}
+const vstTitle=n=>{const v=n.data&&n.data.vst,au=n.au;return (v?v.name:'VST3')+(au&&au.state==='error'?' · failed':au&&au.state==='crashed'?' · crashed':au&&au.state==='loading'?' · loading':'')};
+const vstParams=fx=>[P('level','level',0,1,.8),P('oct','octave',-3,3,0,1,sgn,{sat:1,s:'oct'}),P('semi','transpose',-12,12,0,1,v=>sgn(v)+'st',{sat:1,s:'semi'}),
+  P('len','note length',.02,4,.3,.01,sec,{sat:1,s:'len'})];
+if(VST){
+  TYPES.vst3i={name:'VST3 Instrument',cat:'VST3',color:'#ffb86b',r:54,glyph:'hex',...voiceIO,ownData:1,params:vstParams(),
+    build:n=>vstBuild(n,false),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,
+    on(n,port,ev,emit){const midi=vstNote(n,ev);voiceEnv(n,ev.t,ev.vel,.005,ev.len||n.p.len);emit('hit',ev)}};
+  TYPES.vst3fx={name:'VST3 Effect',cat:'VST3',color:'#ff9b6b',r:50,glyph:'hex',ownData:1,
+    ins:[{id:'in',a:Math.PI,kind:AU},{id:'note',a:2.5,kind:EV,tag:'note'}],outs:[{id:'out',a:0,kind:AU}],params:vstParams(),
+    build:n=>vstBuild(n,true),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,
+    on(n,port,ev){vstNote(n,ev)}};
+  VST.onEvent(m=>{
+    if(m.event==='crashed'){for(const n of nodes)if(n.au&&n.au.slot===m.slot&&n.au.state==='ready'){n.au.state='crashed';flashMsg(`VST3 ${titleOf(n)}: the plugin crashed`)}}
+    // the helper itself stopped: every VST3 module loads again in a new one
+    else if(m.event==='exit'){const vn=nodes.filter(n=>n.au&&/^vst3/.test(n.type));if(!vn.length)return;
+      flashMsg('The VST3 helper stopped. Restarting it…');vn.forEach(n=>{n.au.slot=-1;killAu(n)});setTimeout(rewire,500)}});
+}
+async function refreshVst(force){if(!VST)return;try{vstList=await VST.list(force)}catch(e){vstList=[]}buildRack()}
 // a module from a plugin that isn't installed: keeps its saved data so nothing is lost, and comes back when the plugin does
-TYPES.missing={name:'Missing plugin',cat:'',color:'#8a80b0',r:40,glyph:'none',ins:[],outs:[],params:[],title:n=>'missing: '+(n.orig?n.orig.type:'?')};
+TYPES.missing={name:'Missing plugin',cat:'',color:'#8a80b0',r:40,glyph:'none',ins:[],outs:[],params:[],
+  title:n=>n.orig&&/^vst3/.test(n.orig.type)?'VST3: '+(n.orig.data&&n.orig.data.vst?n.orig.data.vst.name:'?')+(VST?' (not found)':' (desktop app)'):'missing: '+(n.orig?n.orig.type:'?')};
 // layout precompute: dial placement, and port positions for free-form (box) modules
 function prepType(T){
   if(T.box){T.r=Math.max(T.box.w,T.box.h)/2;const{w,h}=T.box;
@@ -2137,6 +2214,10 @@ if(window.orreryDesktop){const groups=new Map();
   PACKS.forEach((pk,pi)=>{const h4=document.createElement('h4');h4.style.setProperty('--c',pk.color);h4.innerHTML='<i></i>';h4.append(pk.name);rackEl.appendChild(h4);
     const box=document.createElement('div');box.className='items';pk.inst.forEach(([nm],ii)=>box.appendChild(item(nm,pk.color,()=>addNode('drum',{pack:pi,inst:ii}))));rackEl.appendChild(box)})}
 section('FX',Object.keys(FX).map(k=>item(FX[k].name,FAM[FX[k].fam],()=>addNode('fx_'+k))));
+// VST3 plugins found by the desktop app: instruments and effects, each adding a module that hosts it
+if(VST){const vi=(v,fx)=>{const b=item(v.name,TYPES[fx?'vst3fx':'vst3i'].color,()=>addNode(fx?'vst3fx':'vst3i',{},{data:{vst:{path:v.path,cid:v.cid,name:v.name,vendor:v.vendor}}}));b.title=`${v.name} · ${v.vendor||''} ${v.version||''}\n${v.path}`;return b};
+  sectionEl('VST3 Instruments',[...vstList.filter(v=>v.instrument).map(v=>vi(v,false)),item('Rescan plugins','#ffb86b',()=>{flashMsg('Scanning VST3 plugins…');refreshVst(true)},true)]);
+  sectionEl('VST3 Effects',[...vstList.filter(v=>!v.instrument).map(v=>vi(v,true)),item('Open VST3 folder','#ff9b6b',()=>VST.openFolder(),true)])}
 section('MIDI',basic(['midiin','ctlrack']));
 section('Out',[item('Speakers / channel',COL.white,()=>addNode('output')),item(TYPES.visual.name,TYPES.visual.color,()=>addNode('visual'))]);
 const builtIn=new Set([...rackEl.querySelectorAll('h3')].map(h=>h.textContent));
@@ -2394,6 +2475,7 @@ resize();builtins();
 if(window.innerWidth<=820){rackEl.hidden=true;rackBtn.setAttribute('aria-expanded','false')}
 // plugins load before the first song opens, so its plugin modules come up as themselves rather than placeholders
 plugQueue=syncPlugins().catch(e=>console.error(e)).then(async()=>{if(desk){await refreshFolderSamples();desk.onSamplesChanged(refreshFolderSamples)}buildRack();renderPlugins();bootSongs();
+  refreshVst();// a first scan of a big plugin collection takes a while: the Rack fills in when it's done
   // ?demo=Crypt (from the website) opens that demo straight away
   const dq=new URLSearchParams(location.search).get('demo'),D=dq&&DEMOS.find(d=>d.name.toLowerCase()===dq.toLowerCase());if(D)openDemo(D)});
 window.addEventListener('resize',()=>{resize();fit()});
