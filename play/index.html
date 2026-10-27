@@ -135,7 +135,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
   <div id="panels"></div>
   <aside class="rack" id="rack"></aside>
   <div class="drop" id="drop" hidden>DROP AUDIO TO MAKE A SAMPLER</div>
-  <div class="hint">Tap a module to bloom its dials · drag rings <kbd>↕</kbd> · wire <kbd>●</kbd>→<kbd>○</kbd> events, <kbd>■</kbd>→<kbd>□</kbd> audio, <kbd>◆</kbd>→any dial<span class="long"> · drag a selected module's rim to resize · <kbd>◯ Section</kbd> circles part of the patch, double-tap a label to rename, drag it to move the whole group · tap a mod knob or wire to cut · drop audio files anywhere</span></div>
+  <div class="hint">Tap a module to bloom its dials · drag rings <kbd>↕</kbd> · wire <kbd>●</kbd>→<kbd>○</kbd> events, <kbd>■</kbd>→<kbd>□</kbd> audio, <kbd>◆</kbd>→any dial<span class="long"> · double-tap a module or its name to rename it · drag a selected module's rim to resize ·<kbd>◯ Section</kbd> circles part of the patch, double-tap a label to rename, drag it to move the whole group · tap a mod knob or wire to cut · drop audio files anywhere</span></div>
   <input type="file" id="file" accept="audio/*" multiple hidden>
   <input type="file" id="songFile" accept=".json,application/json" hidden>
   <div class="pop" id="songMenu" hidden>
@@ -157,6 +157,10 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
     <div id="audOpts"></div>
     <p class="mon" id="audStat"></p>
     <p>If the audio crackles, choose Stable (a bigger buffer, a little more delay), Eco effects (shorter reverbs, lighter saturation) or fewer notes per instrument.</p>
+    <p class="st" style="margin-top:8px">Background image</p>
+    <div class="row"><button type="button" id="bgPick">Choose image…</button><button type="button" id="bgClear">Remove</button></div>
+    <input type="file" id="bgFile" accept="image/*" hidden>
+    <p>Fills the window behind the patch; modules, wires and notes draw over it. Dimming (under Display) keeps them readable. Kept on this computer.</p>
     <p class="st" style="margin-top:8px">Plugins</p>
     <ul id="plugList"></ul>
     <div class="row"><button type="button" id="plugAdd">Add plugin file…</button><button type="button" id="plugReload">Reload plugins</button></div>
@@ -213,7 +217,8 @@ const KEY_WALKS=['hold','+5th','+4th','random root','next scale'];
 const SAMPLER_MODES=['one-shot','pitched','loop','slice'];
 const LOOP_BARS=[1,2,4,8],SLICES=[4,8,16,32];
 const DLY_L=['1/16','1/8','3/16','1/4','3/8','1/2','3/4'],DLY_B=[.25,.5,.75,1,1.5,2,3];
-const SYNC_L=['free','8 bars','4 bars','2 bars','1 bar','1/2','1/4','1/8','1/16'],SYNC_B=[0,32,16,8,4,2,1,.5,.25];
+// the long cycles come last so songs saved with the earlier choices keep them
+const SYNC_L=['free','8 bars','4 bars','2 bars','1 bar','1/2','1/4','1/8','1/16','16 bars','32 bars','64 bars'],SYNC_B=[0,32,16,8,4,2,1,.5,.25,64,128,256];
 const LFO_SHAPES=['sine','tri','saw','square','drift'];
 const RND_L=['clocked','1/16','1/8','1/4','1/2','1 bar','2 bars','4 bars'],RND_B=[0,.25,.5,1,2,4,8,16];
 const MODC={lfo:'#ff7ad9',env:'#ffa3ef',rnd:'#d38cff',macro:'#f2d9ff',follow:'#ff93b8'};
@@ -669,7 +674,7 @@ const TYPES={
     },
     modVal:n=>n.st.lvl||0},
   lfo:{name:'LFO',cat:'Mod',color:MODC.lfo,r:42,glyph:'fx_mod',ins:[],outs:[{id:'out',a:0,kind:CV}],
-    params:[P('rate','rate',.01,12,.25,.01,hz),P('amp','amount',0,1,1),P('shape','shape',0,4,0,1,L(LFO_SHAPES)),P('sync','sync',0,8,0,1,L(SYNC_L))],
+    params:[P('rate','rate',.01,12,.25,.01,hz),P('amp','amount',0,1,1),P('shape','shape',0,4,0,1,L(LFO_SHAPES)),P('sync','sync',0,SYNC_L.length-1,0,1,L(SYNC_L))],
     build:()=>{const sig=G(1),osc=ctx.createOscillator(),og=G(1),cs=ctx.createConstantSource();cs.offset.value=0;osc.connect(og);og.connect(sig);cs.connect(sig);osc.start();cs.start();return{sig,osc,og,cs,stop(){osc.stop();cs.stop()}}},
     tickMod(n,t,dt){const q=effP(n,t),rate=q.sync>0?1/(SYNC_B[q.sync]*60/bpm):q.rate;n.st.ph=((n.st.ph||0)+dt*rate)%1;
       if(q.shape===4){const dur=1/Math.max(.01,rate);if(n.st.dB==null||t-n.st.dT>dur){n.st.dA=n.st.dv||0;n.st.dB=Math.random()*2-1;n.st.dT=t}const u=Math.min(1,(t-n.st.dT)/dur);n.st.dv=n.st.dA+(n.st.dB-n.st.dA)*u*u*(3-2*u)}
@@ -979,6 +984,137 @@ function swStep(n,t){
   swSet(n,t,i);
 }
 function euOn(n,i){const s=n.p.steps,h=Math.min(n.p.hits,s),k=(i+n.p.rot)%s;return h>0&&Math.floor((k+1)*h/s)-Math.floor(k*h/s)===1}
+
+/* ---------- box modules: piano roll, 16x16 grid, control rack, visualizer ----------
+   Free-form rectangles like plugin boxes, keeping their own saved data in n.data (ownData). */
+const ROLL_BARS=[1,2,4,8],ROLL_ROWS=22,VIS_MODES=['skyline','spectrum','scope','rain'];
+const rnd=a=>a[Math.floor(Math.random()*a.length)];
+// a melody that drifts: each pass may nudge one note (pitch, timing, length, or a new neighbour), and "home" pulls
+// changed notes back toward what was recorded, so it wanders without forgetting itself
+function rollMutate(n){
+  const d=n.data,N=ROLL_BARS[n.p.bars]*16,o=d.orig,lo=n.p.low,hi=lo+ROLL_ROWS-1,fit=x=>Math.max(lo,Math.min(hi,x));
+  const snapT=x=>n.p.tones?snapDeg(x,n.p.tones,0,0):x,free=s=>!d.notes.some(q=>q.s===s);
+  if(Math.random()<n.p.mutate&&d.notes.length){const q=rnd(d.notes),op=Math.random();
+    if(op<.4)q.d=fit(snapT(q.d+rnd([-2,-1,1,2])));
+    else if(op<.6){const s=(q.s+rnd([-1,1])+N)%N;if(free(s))q.s=s}
+    else if(op<.75)q.l=Math.max(1,Math.min(16,rnd([q.l*2,Math.ceil(q.l/2)])));
+    else if(op<.9||d.notes.length<=Math.max(2,o.length/2)){const s=(q.s+rnd([2,3,4,-2])+N)%N;if(free(s))d.notes.push({s,l:q.l,d:fit(snapT(q.d+rnd([-2,2,4]))),v:q.v*.8,o:-1})}
+    else d.notes.splice(d.notes.indexOf(q),1)}
+  if(Math.random()<n.p.home){
+    const far=o.map((q,i)=>{const c=d.notes.find(x=>x.o===i);return(!c||c.s!==q.s||c.d!==q.d||c.l!==q.l)?i:-1}).filter(i=>i>=0),extra=d.notes.filter(x=>x.o<0);
+    if(extra.length&&(!far.length||Math.random()<.4))d.notes.splice(d.notes.indexOf(rnd(extra)),1);
+    else if(far.length){const i=rnd(far),c=d.notes.find(x=>x.o===i);if(c)Object.assign(c,o[i]);else d.notes.push({...o[i],o:i})}}
+}
+const rollSeed=n=>{n.data.orig=n.data.notes.map(({s,l,d,v})=>({s,l,d,v}));n.data.notes=n.data.orig.map((q,i)=>({...q,o:i}))};
+// the grid's cells are 16 columns of 16-bit row masks; mutate flips cells toward the fill density, home returns them
+function gridMutate(n){
+  const d=n.data,on=(c,r)=>d.cells[c]>>r&1,count=()=>d.cells.reduce((a,m)=>a+m.toString(2).split('1').length-1,0);
+  for(let k=0;k<3;k++)if(Math.random()<n.p.mutate){const want=count()<n.p.fill*256,c=Math.floor(Math.random()*n.p.len);
+    const rows=[...Array(16).keys()].filter(r=>!!on(c,r)!==want);if(rows.length)d.cells[c]^=1<<rnd(rows)}
+  if(Math.random()<n.p.home){const diff=[];for(let c=0;c<16;c++)for(let r=0;r<16;r++)if(on(c,r)!==(d.home[c]>>r&1))diff.push([c,r]);
+    if(diff.length){const[c,r]=rnd(diff);d.cells[c]^=1<<r}}
+}
+const boxStep=(n,ev,len)=>{if(n.st.lt!=null&&ev.t>n.st.lt)n.st.dt=ev.t-n.st.lt;n.st.lt=ev.t;return n.st.i=((n.st.i??-1)+1)%len};
+Object.assign(TYPES,{
+  roll:{name:'Piano Roll',cat:'Sequence',color:'#6bf0e0',r:190,glyph:'none',box:{w:380,h:210},ownData:1,
+    ins:[{id:'clk',kind:EV,tag:'clk'},{id:'rec',kind:EV,tag:'rec'},{id:'rst',kind:EV,tag:'rst'}],outs:[{id:'out',kind:EV}],
+    params:[P('bars','loop',0,3,1,1,v=>ROLL_BARS[v]+' bar'),P('mutate','mutate',0,1,.3,.01,pct),P('home','home',0,1,.25,.01,pct),P('gate','gate',.1,1,.9,.01,pct),
+      P('low','lowest',-14,7,-7,1,v=>'deg '+v),P('tones','tones',0,SNAP_SETS.length-1,0,1,v=>SNAP_SETS[v].l),P('len','rec length',1,8,2,1,v=>v+'/16')],
+    init(n){const d=n.data;d.notes=d.notes||[];d.rec=!!d.rec;if(!d.orig)rollSeed(n)},// notes given without a home melody become it
+    on(n,port,ev,emit){const d=n.data,N=ROLL_BARS[n.p.bars]*16;
+      if(port==='rst'){n.st.i=-1;return}
+      // recording: a note lands on the nearest 16th; a new note on the same step and pitch replaces the old one
+      if(port==='rec'){if(!d.rec)return;const sp=n.st.dt||sixteenth(),i=n.st.i??0,s=((ev.t-(n.st.lt??ev.t))>sp/2?i+1:i)%N;
+        d.notes=d.notes.filter(q=>!(q.s===s&&q.d===ev.deg));d.notes.push({s,l:n.p.len,d:ev.deg,v:ev.vel??.8});rollSeed(n);return}
+      const i=boxStep(n,ev,N),sp=n.st.dt||sixteenth();if(i===0&&(n.st.passes=(n.st.passes||0)+1)>1)rollMutate(n);
+      for(const q of d.notes)if(q.s===i)emit('out',{t:ev.t,deg:q.d,vel:q.v??.8,len:q.l*sp*n.p.gate})},
+    btns:n=>[{l:'R',dx:-160,dy:117,r:9,on:n.data.rec,col:'#ff5a78'},{l:'↺',dx:-136,dy:117,r:9},{l:'C',dx:-112,dy:117,r:9}],
+    press(n,i){const d=n.data;if(i===0){d.rec=!d.rec;flashMsg(d.rec?'Recording: notes into the roll\'s rec input land on the nearest 16th':'Recording off')}
+      else if(i===1){d.notes=d.orig.map((q,j)=>({...q,o:j}));flashMsg('Back to the recorded melody')}else{d.notes=[];d.orig=[];flashMsg('Roll cleared')}save()},
+    pointer:1,pointerFn(n,e){if(e.type!=='down')return;const N=ROLL_BARS[n.p.bars]*16,x=(e.x+180)/360,y=(e.y+88)/180;if(x<0||x>=1||y<0||y>=1)return;
+      const s=Math.floor(x*N),dg=n.p.low+ROLL_ROWS-1-Math.floor(y*ROLL_ROWS),d=n.data,q=d.notes.find(q=>dg===q.d&&s>=q.s&&s<q.s+q.l);
+      if(q&&e.shift)q.l=q.l>=8?1:q.l*2;else if(q)d.notes.splice(d.notes.indexOf(q),1);else d.notes.push({s,l:n.p.len,d:dg,v:.8});rollSeed(n)},
+    draw(g2,n,t){const d=n.data,N=ROLL_BARS[n.p.bars]*16,c=colorOf(n),X=-180,Y=-88,W=360,H=180,cw=W/N,rh=H/ROLL_ROWS;
+      g2.fillStyle='rgba(10,6,20,.6)';g2.fillRect(X,Y,W,H);
+      for(let r=0;r<ROLL_ROWS;r++){const dg=n.p.low+ROLL_ROWS-1-r,L2=scaleLen();if(((dg%L2)+L2)%L2===0){g2.fillStyle=alpha(c,.08);g2.fillRect(X,Y+r*rh,W,rh)}}
+      for(let s=0;s<=N;s+=4){g2.strokeStyle=alpha(c,s%16===0?.3:.1);g2.lineWidth=1;g2.beginPath();g2.moveTo(X+s*cw,Y);g2.lineTo(X+s*cw,Y+H);g2.stroke()}
+      for(const q of d.notes){const r=n.p.low+ROLL_ROWS-1-q.d;if(r<0||r>=ROLL_ROWS)continue;const o=q.o>=0&&d.orig[q.o],home=o&&o.s===q.s&&o.d===q.d&&o.l===q.l;
+        g2.fillStyle=home?c:'#ffb35a';g2.globalAlpha=.85;g2.fillRect(X+q.s*cw+.5,Y+r*rh+1,Math.min(q.l,N-q.s)*cw-1,rh-2);g2.globalAlpha=1}
+      if(n.st.i!=null){g2.fillStyle=alpha('#ffffff',.5);g2.fillRect(X+n.st.i*cw,Y,Math.max(1,cw),H)}
+      if(d.rec){g2.fillStyle='#ff5a78';g2.beginPath();g2.arc(X+W-6,Y-8,4,0,TAU);g2.fill()}}},
+
+  grid16:{name:'Grid 16',cat:'Sequence',color:'#b48cff',r:150,glyph:'none',box:{w:300,h:300},ownData:1,
+    ins:[{id:'clk',kind:EV,tag:'clk'},{id:'rst',kind:EV,tag:'rst'}],
+    outs:[...[...Array(16).keys()].map(r=>({id:'r'+r,kind:EV,x:155,y:-135+r*18,nx:1,ny:0})),{id:'notes',kind:EV,tag:'notes',side:'bottom'}],
+    params:[P('len','length',1,16,16,1,v=>v+' steps'),P('dir','direction',0,3,0,1,L(DIRS)),P('mutate','mutate',0,1,0,.01,pct),P('fill','fill',0,1,.2,.01,pct),
+      P('home','home',0,1,.2,.01,pct),P('prob','step chance',0,1,1,.01,pct),P('low','lowest',-14,14,0,1,v=>'deg '+v)],
+    init(n){const d=n.data;d.cells=d.cells||Array(16).fill(0);d.home=d.home||d.cells.slice()},
+    on(n,port,ev,emit){const d=n.data,Ln=n.p.len;if(port==='rst'){n.st.i=-1;return}
+      let i=n.st.i??-1;if(n.p.dir===0)i=(i+1)%Ln;else if(n.p.dir===1)i=i<=0?Ln-1:i-1;
+      else if(n.p.dir===2){let s=n.st.ds||1;i+=s;if(i>=Ln){s=-1;i=Math.max(0,Ln-2)}else if(i<0){s=1;i=Math.min(1,Ln-1)}n.st.ds=s}else i=Math.floor(Math.random()*Ln);
+      if(i===0&&(n.st.cyc=(n.st.cyc||0)+1)>1)gridMutate(n);n.st.i=i;if(Math.random()>=n.p.prob)return;
+      for(let r=0;r<16;r++)if(d.cells[i]>>r&1){const e={...ev,deg:0,vel:(ev.vel??.8)*(i%4===0?1:.8)};emit('r'+r,e);emit('notes',{...e,deg:n.p.low+15-r})}},
+    btns:n=>[{l:'↺',dx:-136,dy:164,r:9},{l:'⚄',dx:-112,dy:164,r:9},{l:'C',dx:-88,dy:164,r:9}],
+    press(n,i){const d=n.data;if(i===0){d.cells=d.home.slice();flashMsg('Back to the stored pattern')}
+      else if(i===1){d.cells=d.cells.map(()=>{let m=0;for(let r=0;r<16;r++)if(Math.random()<n.p.fill)m|=1<<r;return m});d.home=d.cells.slice()}
+      else{d.cells=Array(16).fill(0);d.home=d.cells.slice()}save()},
+    pointer:1,pointerFn(n,e){const c=Math.floor((e.x+135)/270*16),r=Math.floor((e.y+128)/270*16),d=n.data;if(c<0||c>15||r<0||r>15)return;
+      if(e.type==='down')n.ui.paint=!(d.cells[c]>>r&1);if(e.type==='up'){d.home=d.cells.slice();return}
+      if(n.ui.paint)d.cells[c]|=1<<r;else d.cells[c]&=~(1<<r)},
+    draw(g2,n,t){const d=n.data,c=colorOf(n),X=-135,Y=-128,S=270/16;
+      for(let col=0;col<16;col++)for(let r=0;r<16;r++){const on=d.cells[col]>>r&1,act=col<n.p.len;
+        g2.fillStyle=on?(r<4?'#ff9ad5':r<8?'#ffb35a':r<12?c:'#6bf0e0'):alpha(c,act?(col%4===0?.14:.07):.03);
+        if(on&&n.st.i===col){g2.save();g2.shadowColor='#fff';g2.shadowBlur=glowB(10)}
+        g2.fillRect(X+col*S+1,Y+r*S+1,S-2,S-2);if(on&&n.st.i===col)g2.restore()}
+      if(n.st.i!=null){g2.strokeStyle=alpha('#ffffff',.6);g2.lineWidth=1;g2.strokeRect(X+n.st.i*S,Y,S,270)}}},
+
+  ctlrack:{name:'Control Rack',cat:'MIDI',color:'#ff9ad5',r:280,glyph:'none',box:{w:560,h:130},ownData:1,
+    ins:[],outs:[...Array(8).keys()].map(i=>({id:'o'+(i+1),kind:CV,x:-280+(i+.5)*70,y:70,nx:0,ny:1})),
+    // the knobs are dials like any other (Scenes store them, MIDI Learn maps them), drawn on the rack instead of as satellites
+    params:[...Array(8).keys()].map(i=>P('k'+(i+1),'knob '+(i+1),0,1,0,.01,(v,n)=>(n&&n.data&&n.data.labels?n.data.labels[i]+' ':'')+pct(v),{s:'k'+(i+1),hide:1})),
+    init(n){n.data.labels=n.data.labels||[...Array(8).keys()].map(i=>'knob '+(i+1))},
+    build:n=>{const cs=Object.fromEntries([...Array(8).keys()].map(i=>['o'+(i+1),csBuild()]));
+      return{sigs:Object.fromEntries(Object.entries(cs).map(([k,c])=>[k,c.sig])),sig:cs.o1.sig,css:cs,stop(){Object.values(cs).forEach(c=>c.stop())}}},
+    cvOut:1,modVal:(n,port)=>n.p['k'+port.slice(1)]||0,
+    pointer:1,pointerHit:(n,x,y)=>y>-49&&y<34,
+    pointerFn(n,e){if(e.type==='down'){const i=Math.floor((e.x+280)/70);if(i<0||i>7)return;
+        if(midiLearn){midiArm={k:'param',node:n.id,key:'k'+(i+1)};sel=n;flashMsg(`Move a control on your MIDI device to map ${n.data.labels[i]}`);return}
+        n.ui.knob={i,y:e.y,v:n.p['k'+(i+1)]}}
+      const k=n.ui.knob;if(!k)return;if(e.type==='up'){n.ui.knob=null;return}setParam(n,'k'+(k.i+1),Math.max(0,Math.min(1,k.v+(k.y-e.y)/110)))},
+    draw(g2,n,t){const c=colorOf(n);for(let i=0;i<8;i++){const x=-280+(i+.5)*70,y=-8,v=n.p['k'+(i+1)]||0,a0=Math.PI*.75,a1=a0+v*Math.PI*1.5,tgt={k:'param',node:n.id,key:'k'+(i+1)};
+      if(midiArm&&sameTgt(midiArm,tgt)){g2.strokeStyle=alpha('#ff5a78',.5+.5*Math.sin(t*8));g2.lineWidth=2;g2.beginPath();g2.arc(x,y,28,0,TAU);g2.stroke()}
+      else if(findMap(tgt)){g2.fillStyle=alpha(c,.7);g2.font='8px "IBM Plex Mono",monospace';g2.textAlign='center';g2.fillText('MIDI',x,y-30)}
+      g2.strokeStyle=alpha(c,.18);g2.lineWidth=5;g2.beginPath();g2.arc(x,y,22,a0,Math.PI*2.25);g2.stroke();
+      g2.strokeStyle=c;g2.beginPath();g2.arc(x,y,22,a0,a1);g2.stroke();
+      g2.fillStyle='#120a22';g2.beginPath();g2.arc(x,y,15,0,TAU);g2.fill();g2.strokeStyle=alpha(c,.6);g2.lineWidth=1.5;g2.beginPath();g2.moveTo(x,y);g2.lineTo(x+Math.cos(a1)*14,y+Math.sin(a1)*14);g2.stroke();
+      g2.fillStyle=alpha(c,.8);g2.font='9px "IBM Plex Mono",monospace';g2.textAlign='center';g2.fillText(Math.round(v*100),x,y+4)}},
+    // the knob names are editable text, kept with the song
+    panel:{w:560,h:22,x:0,y:47,mount(el,n){el.style.display='flex';
+      n.data.labels.forEach((s,i)=>{const inp=document.createElement('input');inp.value=s;inp.maxLength=14;inp.title='Knob '+(i+1)+' name';
+        inp.style.cssText='width:70px;box-sizing:border-box;background:transparent;border:0;color:#ff9ad5;font:10px "IBM Plex Mono",monospace;text-align:center;outline:none';
+        inp.oninput=()=>{n.data.labels[i]=inp.value;save()};el.append(inp)})}}},
+
+  visual:{name:'Visualizer',cat:'Out',color:'#7ab8ff',r:160,glyph:'none',box:{w:320,h:200},
+    ins:[{id:'in',kind:AU}],outs:[{id:'out',kind:AU}],
+    params:[P('mode','look',0,VIS_MODES.length-1,0,1,L(VIS_MODES)),P('gain','sensitivity',.2,4,1.5,.01,v=>'×'+v.toFixed(1)),P('hue','warmth',0,1,.35,.01,pct)],
+    build:n=>{const inp=G(1),out=G(1),an=ctx.createAnalyser();an.fftSize=1024;an.smoothingTimeConstant=.82;inp.connect(an);inp.connect(out);
+      return{inp,out,an,fd:new Uint8Array(an.frequencyBinCount),td:new Uint8Array(an.fftSize),stop(){}}},
+    draw(g2,n,t){const X=-150,Y=-88,W=300,H=178,A=n.au;g2.save();g2.beginPath();g2.rect(X,Y,W,H);g2.clip();g2.fillStyle='#07040f';g2.fillRect(X,Y,W,H);
+      const cool='#6bf0e0',warm=n.p.hue>.5?'#ffb35a':'#ff9ad5',k=n.p.gain;let fd=null,lvl=0;
+      if(A&&A.an){A.an.getByteFrequencyData(A.fd);fd=A.fd;for(let i=0;i<64;i++)lvl+=fd[i];lvl=Math.min(1,lvl/64/255*k)}
+      const band=(i,N)=>fd?Math.min(1,fd[Math.floor(Math.pow(i/N,1.8)*fd.length*.6)+1]/255*k):0,m=VIS_MODES[n.p.mode];
+      if(m==='skyline'){const N=24;for(let i=0;i<N;i++){const bw=W/N,h=20+(Math.sin(i*12.9898)*.5+.5)*90+band(i,N)*50,bx=X+i*bw;
+          g2.fillStyle='#0f0a1e';g2.fillRect(bx+1,Y+H-h,bw-2,h);g2.strokeStyle=alpha(i%3?cool:warm,.25+band(i,N)*.6);g2.strokeRect(bx+1,Y+H-h,bw-2,h);
+          for(let wy=Y+H-h+6;wy<Y+H-4;wy+=8)for(let wx=bx+3;wx<bx+bw-4;wx+=5){const on=Math.sin(wx*7.1+wy*3.3+Math.floor(t*.5+i))>.55-band(i,N)*.8;
+            if(on){g2.fillStyle=alpha(warm,.35+band(i,N)*.6);g2.fillRect(wx,wy,2,3)}}}}
+      if(m==='spectrum'){const N=48;for(let i=0;i<N;i++){const v=band(i,N),h=v*H*.9;g2.fillStyle=i/N<n.p.hue?warm:cool;g2.globalAlpha=.35+v*.65;g2.fillRect(X+i*W/N+1,Y+H-h,W/N-2,h)}g2.globalAlpha=1}
+      if(m==='scope'&&A&&A.an){A.an.getByteTimeDomainData(A.td);g2.strokeStyle=cool;g2.lineWidth=2;g2.shadowColor=cool;g2.shadowBlur=glowB(8);g2.beginPath();
+        for(let i=0;i<A.td.length;i+=4){const x=X+i/A.td.length*W,y=Y+H/2+(A.td[i]-128)/128*H*.45*k;i?g2.lineTo(x,y):g2.moveTo(x,y)}g2.stroke()}
+      if(m==='rain'||m==='skyline'){const N=m==='rain'?90:40;g2.strokeStyle=alpha(cool,.35+lvl*.5);g2.lineWidth=1;g2.beginPath();
+        for(let i=0;i<N;i++){const sp=140+(i*37%60)+lvl*160,x=X+((i*53.7)%W),y=Y+((t*sp+i*91)%(H+20))-10;g2.moveTo(x,y);g2.lineTo(x-2,y+8+lvl*8)}g2.stroke()}
+      if(m==='rain'){g2.fillStyle=alpha(warm,.15+lvl*.4);g2.beginPath();g2.ellipse(0,Y+H-10,60+lvl*80,6,0,0,TAU);g2.fill()}
+      g2.restore()}},
+});
 // a module from a plugin that isn't installed: keeps its saved data so nothing is lost, and comes back when the plugin does
 TYPES.missing={name:'Missing plugin',cat:'',color:'#8a80b0',r:40,glyph:'none',ins:[],outs:[],params:[],title:n=>'missing: '+(n.orig?n.orig.type:'?')};
 // layout precompute: dial placement, and port positions for free-form (box) modules
@@ -1015,7 +1151,7 @@ function mk(type,x,y,p={},extra={}){
   if(extra.label)n.label=extra.label;
   if(type==='clock')n.p.bpm=bpm;
   if(type==='key'){n.p.scale=SCALE_NAMES.indexOf(scaleName);n.p.root=root}
-  if(T.plugin){n.data=extra.data?JSON.parse(JSON.stringify(extra.data)):{};if(T.init)T.init(n)}// plugin modules keep their own saved data
+  if(T.plugin||T.ownData){n.data=extra.data?JSON.parse(JSON.stringify(extra.data)):{};if(T.init)T.init(n)}// plugin and box modules keep their own saved data
   nodes.push(n);ensureAu(n);return n;
 }
 function portDef(n,id,out){return (out?TYPES[n.type].outs:TYPES[n.type].ins).find(p=>p.id===id)}
@@ -1395,10 +1531,11 @@ const DEMOS=[
 
 /* ---------- display settings (per browser, never per song) ---------- */
 const SET_KEY='orrery-settings-v1',calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
-const SET_DEF={pulses:!calm,wireAnim:!calm,glow:true,trail:true,backdrop:true,sharp:true,fps:60,audio:'balanced',fx:'high',voices:16};
-const SET_LOW={pulses:false,wireAnim:false,glow:false,trail:false,backdrop:false,sharp:false,fps:30,audio:'stable',fx:'eco',voices:8};
+const SET_DEF={pulses:!calm,wireAnim:!calm,glow:true,trail:true,backdrop:true,sharp:true,fps:60,audio:'balanced',fx:'high',voices:16,bgDim:.55};
+const SET_LOW={pulses:false,wireAnim:false,glow:false,trail:false,backdrop:false,sharp:false,fps:30,audio:'stable',fx:'eco',voices:8,bgDim:.55};
 const SET_UI=[['pulses','Moving pulses on wires'],['wireAnim','Crawling wire and outline dashes'],['glow','Glow around firing modules'],['trail','Note trail behind the patch'],
-  ['backdrop','Background grid and halo'],['sharp','Sharp graphics on high-res screens'],['fps','Frame rate',[[60,'60 fps'],[30,'30 fps'],[15,'15 fps']]]];
+  ['backdrop','Background grid and halo'],['sharp','Sharp graphics on high-res screens'],['fps','Frame rate',[[60,'60 fps'],[30,'30 fps'],[15,'15 fps']]],
+  ['bgDim','Background image dimming',[[0,'None'],[.3,'Light'],[.55,'Medium'],[.75,'Strong']]]];
 const AUD_UI=[['audio','Engine',[['stable','Stable'],['balanced','Balanced'],['responsive','Low latency']]],['fx','Effects quality',[['high','High'],['eco','Eco']]],
   ['voices','Notes per instrument',[[8,'8'],[16,'16'],[32,'32'],[64,'64']]]];
 // engine modes: the sound card buffer (latency hint) and how far ahead notes are scheduled
@@ -1457,6 +1594,8 @@ function hit(wx,wy){
     if(n.type==='output')for(const[k2,,,dx]of MS_BTNS){if(Math.hypot(wx-(n.x+dx*s),wy-(n.y+(T.r+17)*s))<10*s+2)return{kind:'toggle',n,k:k2}}
     if(T.btns){const bs=T.btns(n);for(let i=0;i<bs.length;i++){const b=bs[i];if(Math.hypot(wx-(n.x+b.dx*s),wy-(n.y+b.dy*s))<b.r*s+2)return{kind:'btn',n,i}}}
     const d=Math.hypot(wx-n.x,wy-n.y),lx=(wx-n.x)/s,ly=(wy-n.y)/s;
+    // a box's title, just above it, is also its handle: tap to select and drag, double-tap to rename
+    if(T.box&&Math.abs(lx)<T.box.w/2&&ly<-T.box.h/2&&ly>-T.box.h/2-22)return{kind:'node',n};
     if(T.box){if(Math.abs(lx)>T.box.w/2+2||Math.abs(ly)>T.box.h/2+2)continue;
       // a box's top strip is its handle; the rest goes to the plugin if it wants pointer input
       if(T.pointer&&(T.pointerHit?T.pointerHit(n,lx,ly):ly>-T.box.h/2+16))return{kind:'plug',n};return{kind:'node',n}}
@@ -1483,8 +1622,13 @@ const now=()=>ctx?ctx.currentTime:performance.now()/1000;
 function alpha(hex,a){const v=parseInt(hex.slice(1),16);return`rgba(${v>>16&255},${v>>8&255},${v&255},${a})`}
 function flashOf(n,t){let f=0;for(const ft of n.fires){const d=t-ft;if(d>=0&&d<.35)f=Math.max(f,1-d/.35)}return f}
 let meter=0;
+// a background picture, chosen in Settings and kept in this browser's storage (it can be large, so it isn't in settings)
+let bgImg=null;
+function showBg(blob){if(!blob){bgImg=null;return}const im=new Image();im.onload=()=>{bgImg=im};im.src=URL.createObjectURL(blob)}
 function drawBG(t){
   g.fillStyle='#0a0614';g.fillRect(0,0,W,H);
+  if(bgImg){const k=Math.max(W/bgImg.width,H/bgImg.height),iw=bgImg.width*k,ih=bgImg.height*k;g.drawImage(bgImg,(W-iw)/2,(H-ih)/2,iw,ih);
+    if(setv.bgDim){g.fillStyle=`rgba(10,6,20,${setv.bgDim})`;g.fillRect(0,0,W,H)}}
   const cx=W/2,cy=H/2,R=Math.min(W,H)*.47;
   if(setv.backdrop){
     const rg=g.createRadialGradient(cx,cy,R*.1,cx,cy,R*1.25);rg.addColorStop(0,`rgba(${40+meter*40},20,${70+meter*30},.55)`);rg.addColorStop(1,'rgba(10,6,20,0)');
@@ -1895,22 +2039,26 @@ let lastTap={s:null,t:0};
 const secBtn=document.getElementById('secBtn'),secEdit=document.getElementById('secEdit');
 function setDrawMode(on){drawMode=on;secBtn.setAttribute('aria-pressed',String(on));cv.style.cursor=on?'crosshair':'default';if(on){sel=null;flashMsg('Drag on the canvas to draw a section circle')}}
 secBtn.onclick=()=>setDrawMode(!drawMode);
-let editing=null;
+// the name box opens on the second tap of a double-tap; that click's own default action would take focus straight
+// back to the canvas and close the box unchanged, so focus waits for the click to finish and an early blur is ignored
+let editing=null,editT=0;
+const openEdit=v=>{secEdit.value=v;secEdit.hidden=false;editT=performance.now();setTimeout(()=>{secEdit.focus();secEdit.select()},0)};
 function editSection(S){
   editing=S;const r=cv.getBoundingClientRect(),st=stage.getBoundingClientRect();
   secEdit.style.left=(S.x*view.s+view.x+r.left-st.left)+'px';secEdit.style.top=((S.y-S.r)*view.s+view.y+r.top-st.top)+'px';
-  secEdit.value=S.name;secEdit.hidden=false;secEdit.focus();secEdit.select();
+  openEdit(S.name);
 }
 function editNode(n){
   editing=n;const r=cv.getBoundingClientRect(),st=stage.getBoundingClientRect(),T=TYPES[n.type];
-  secEdit.style.left=(n.x*view.s+view.x+r.left-st.left)+'px';secEdit.style.top=((n.y-(T.r*(n.sz||1)+16))*view.s+view.y+r.top-st.top)+'px';
-  secEdit.value=titleOf(n);secEdit.hidden=false;secEdit.focus();secEdit.select();
+  const top=T.box?T.box.h/2+12:T.r*(n.sz||1)+16;// over the module's title
+  secEdit.style.left=(n.x*view.s+view.x+r.left-st.left)+'px';secEdit.style.top=((n.y-top)*view.s+view.y+r.top-st.top)+'px';
+  openEdit(titleOf(n));
 }
 function endEdit(commit){if(!editing)return;
   if(commit){const v=secEdit.value.trim();if(editing.type){const T=TYPES[editing.type],def=T.title?T.title(editing):T.name;editing.label=v&&v!==def?v:undefined}else editing.name=v||'Section';save()}
   editing=null;secEdit.hidden=true;cv.focus&&cv.focus()}
 secEdit.addEventListener('keydown',e=>{e.stopPropagation();if(e.key==='Enter')endEdit(true);if(e.key==='Escape')endEdit(false)});
-secEdit.addEventListener('blur',()=>endEdit(true));
+secEdit.addEventListener('blur',()=>{if(editing&&performance.now()-editT<250){setTimeout(()=>secEdit.focus(),0);return}endEdit(true)});
 const playBtn=document.getElementById('play'),bpmIn=document.getElementById('bpm'),scaleSel=document.getElementById('scale'),rootSel=document.getElementById('root');
 SCALE_NAMES.forEach(k=>scaleSel.add(new Option(k,k)));ROOTS.forEach((k,i)=>rootSel.add(new Option(k,i)));
 function syncUI(){bpmIn.value=bpm;scaleSel.value=scaleName;rootSel.value=root}
@@ -1942,7 +2090,7 @@ rackEl.innerHTML='';
 const plugIn=cat=>Object.entries(TYPES).filter(([,T])=>T.plugin&&T.cat===cat).map(([k,T])=>{const b=item(T.name,T.color,()=>addNode(k));b.title=T.name+' · plugin ('+T.plugin.file+')';return b});
 const section=(title,els)=>sectionEl(title,[...els,...plugIn(title)]);
 section('Time',basic(['clock','pulsar','divider','mult']));
-section('Sequence',basic(['sequencer','euclid','turing','marbles','grids']));
+section('Sequence',basic(['sequencer','euclid','turing','marbles','grids','roll','grid16']));
 section('Harmony',basic(['key','chord','snap','shift']));
 section('Logic',basic(['chance','walker','repeater','switcher','gate','burst','groove','logic']));
 section('Generate',basic(['rain','orbits','growth']));
@@ -1967,8 +2115,8 @@ if(window.orreryDesktop){const groups=new Map();
   PACKS.forEach((pk,pi)=>{const h4=document.createElement('h4');h4.style.setProperty('--c',pk.color);h4.innerHTML='<i></i>';h4.append(pk.name);rackEl.appendChild(h4);
     const box=document.createElement('div');box.className='items';pk.inst.forEach(([nm],ii)=>box.appendChild(item(nm,pk.color,()=>addNode('drum',{pack:pi,inst:ii}))));rackEl.appendChild(box)})}
 section('FX',Object.keys(FX).map(k=>item(FX[k].name,FAM[FX[k].fam],()=>addNode('fx_'+k))));
-section('MIDI',basic(['midiin']));
-section('Out',[item('Speakers / channel',COL.white,()=>addNode('output'))]);
+section('MIDI',basic(['midiin','ctlrack']));
+section('Out',[item('Speakers / channel',COL.white,()=>addNode('output')),item(TYPES.visual.name,TYPES.visual.color,()=>addNode('visual'))]);
 const builtIn=new Set([...rackEl.querySelectorAll('h3')].map(h=>h.textContent));
 [...new Set(Object.values(TYPES).filter(T=>T.plugin&&!builtIn.has(T.cat)).map(T=>T.cat))].forEach(cat=>sectionEl(cat,plugIn(cat)));
 }
@@ -1995,6 +2143,12 @@ setInterval(()=>{if(setPanel.hidden)return;if(!ctx){audStat.textContent='Audio s
 setBtn.onclick=e=>{e.stopPropagation();const open=setPanel.hidden;closePops();if(open){setPanel.hidden=false;setBtn.setAttribute('aria-expanded','true');placePop(setPanel,setBtn)}};
 document.getElementById('setLow').onclick=()=>{setv={...SET_LOW};applySettings()};
 document.getElementById('setDef').onclick=()=>{setv={...SET_DEF};applySettings()};
+const bgFile=document.getElementById('bgFile');
+document.getElementById('bgPick').onclick=()=>bgFile.click();
+bgFile.onchange=async()=>{const f=bgFile.files[0];bgFile.value='';if(!f)return;if(!f.type.startsWith('image/')){flashMsg(`${f.name} isn't an image`);return}
+  try{await idb.put('bg:image',f)}catch(e){flashMsg('Could not keep that image; it shows until you close ORY-1')}showBg(f)};
+document.getElementById('bgClear').onclick=async()=>{try{await idb.put('bg:image',null)}catch(e){}showBg(null)};
+idb.get('bg:image').then(b=>{if(b)showBg(b)}).catch(()=>{});
 // demos live in the song list: each is a song tagged with its demo, built the first time it's opened (or reset)
 const demoSong=name=>Object.keys(lib.songs).find(id=>lib.songs[id].demo===name);
 function buildDemo(D,id){lib.cur=id;D.fn();lib.songs[id].data=serialize();lib.cur=null}
