@@ -1,4 +1,5 @@
-// The only bridge between the page and the computer: the plugins and samples folders, and word when either changes.
+// The only bridge between the page and the computer: the plugins and samples folders, word when either changes, and
+// the file copy of the song library.
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('orreryDesktop', {
@@ -14,4 +15,7 @@ contextBridge.exposeInMainWorld('orreryDesktop', {
   onSamplesChanged: cb => ipcRenderer.on('samples:changed', () => cb()),
   // playing keeps the computer awake and makes sure every audio process is exempt from background throttling
   setPlaying: on => ipcRenderer.send('audio:playing', !!on),
+  // read once while the page starts, so it waits for the file; saves are sent and written in the background
+  readLibrary: () => ipcRenderer.sendSync('library:read'),
+  writeLibrary: text => ipcRenderer.send('library:write', String(text)),
 });

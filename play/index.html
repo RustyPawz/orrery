@@ -1125,7 +1125,10 @@ function serialize(){return{bpm,scaleName,root,midi:midiMap,
   wires:wires.map(w=>({id:w.id,a:w.a,ao:w.ao,b:w.b,bi:w.bi,bk:w.bk,k:w.k,depth:w.depth})).concat(orphanWires)}}
 // wires to modules whose plugin isn't installed: kept as saved so they reconnect when it is
 let orphanWires=[];
-function writeLib(){try{localStorage.setItem(LIB,JSON.stringify(lib))}catch(e){flashMsg('Browser storage is full. Export songs you want to keep, then delete some.')}}
+// the desktop app also keeps the library in Documents\ORY-1\library.json, so a damaged browser store can't lose the songs
+function writeLib(){const s=JSON.stringify(lib);try{localStorage.setItem(LIB,s)}catch(e){flashMsg('Browser storage is full. Export songs you want to keep, then delete some.')}
+  try{window.orreryDesktop?.writeLibrary?.(s)}catch(e){}}
+const ownSongs=L=>L&&L.songs?Object.values(L.songs).filter(s=>!s.demo).length:0;
 function flushSave(){clearTimeout(saveTm);saveTm=null;if(lib.cur&&lib.songs[lib.cur]){lib.songs[lib.cur].data=serialize();lib.songs[lib.cur].t=Date.now()}writeLib()}
 function save(){clearTimeout(saveTm);saveTm=setTimeout(flushSave,300)}
 window.addEventListener('pagehide',flushSave);
@@ -1151,6 +1154,9 @@ function openSong(id){
 }
 function bootSongs(){
   try{const d=JSON.parse(localStorage.getItem(LIB)||'null');if(d&&d.songs&&Object.keys(d.songs).length)lib=d}catch(e){}
+  // storage came up without any of your own songs but the desktop's library file has some: bring them back from it
+  let file=null;try{const t=window.orreryDesktop?.readLibrary?.();if(t)file=JSON.parse(t)}catch(e){}
+  if(file&&file.songs&&ownSongs(file)&&!ownSongs(lib)){lib=file;const k=ownSongs(file);setTimeout(()=>flashMsg(`Restored ${k} song${k===1?'':'s'} from Documents\\ORY-1\\library.json`),500)}
   if(!Object.keys(lib.songs).length){
     let old=null;try{old=JSON.parse(localStorage.getItem(OLD)||'null')}catch(e){}
     if(old&&old.nodes&&old.nodes.length)lib.cur=addSong('My patch',old);

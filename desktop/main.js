@@ -136,6 +136,28 @@ function listPlugins() {
   }
 }
 
+// the song library, mirrored from the page's browser storage into Documents\ORY-1\library.json: if that storage is ever
+// damaged (a crash in the middle of a save can leave it opening empty), the page restores the songs from this file.
+// Writes wait a second for edits to settle, go to a temporary file first, and the first write of each session keeps
+// the file it replaces as library.previous.json.
+const libraryFile = () => path.join(docsDir, 'library.json');
+let libraryText = null, libraryTimer = null, libraryRotated = false;
+function writeLibrary() {
+  clearTimeout(libraryTimer); libraryTimer = null;
+  if (libraryText === null) return;
+  const file = libraryFile(), tmp = file + '.tmp';
+  try {
+    if (!libraryRotated && fs.existsSync(file)) fs.copyFileSync(file, path.join(docsDir, 'library.previous.json'));
+    libraryRotated = true;
+    fs.writeFileSync(tmp, libraryText);
+    fs.renameSync(tmp, file);
+    libraryText = null;
+  } catch (e) { /* the file is busy (a sync client, say): the next save tries again */ }
+}
+function readLibrary() {
+  try { return fs.readFileSync(libraryFile(), 'utf8'); } catch (e) { return null; }
+}
+
 // editors often write a file in several steps, so wait for the folder to settle before telling the page
 let watchTimer = null;
 function watchPlugins() {
@@ -216,6 +238,9 @@ ipcMain.handle('samples:read', (e, rel) => readSample(rel));
 ipcMain.handle('samples:save', (e, name, bytes) => saveSample(name, bytes));
 ipcMain.handle('samples:open', () => shell.openPath(samplesDir));
 ipcMain.on('audio:playing', (e, on) => { setPlaying(!!on); optOutOfThrottling(); });
+ipcMain.on('library:read', e => { e.returnValue = readLibrary(); });
+ipcMain.on('library:write', (e, text) => { libraryText = String(text); clearTimeout(libraryTimer); libraryTimer = setTimeout(writeLibrary, 1000); });
+app.on('will-quit', writeLibrary);
 
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.whenReady().then(() => {
