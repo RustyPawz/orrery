@@ -436,10 +436,12 @@ function samplerHit(n,ev){
   const S=SAMPLES[n.sid];if(!S||!n.au)return;
   if(n.p.mode===2&&n.p.speed===1)return samplerFree(n,ev);
   const p=n.p,buf=S.buf,D=buf.duration,t=ev.t;
-  let off=p.start*D,dur=Math.max(.01,p.len*(D-off)),rate=Math.pow(2,p.tune/12),midi=null;
-  if(p.mode===1){midi=60+root+12*p.oct+degToSemi(ev.deg);rate*=Math.pow(2,(midi-p.rootNote)/12)}
+  // octave works in every mode but tempo loops; it's rounded, so a modulated octave lands on whole octaves
+  let off=p.start*D,dur=Math.max(.01,p.len*(D-off)),rate=Math.pow(2,p.tune/12),midi=null;const oc=Math.round(p.oct);
+  if(p.mode===1){midi=60+root+12*oc+degToSemi(ev.deg);rate*=Math.pow(2,(midi-p.rootNote)/12)}
+  else if(p.mode===0)rate*=Math.pow(2,oc);
   else if(p.mode===2){rate=dur/(LOOP_BARS[p.bars]*4*60/bpm)}
-  else if(p.mode===3){const k=SLICES[p.slices],i=((ev.deg%k)+k)%k,sl=dur/k;off+=i*sl;dur=sl}
+  else if(p.mode===3){const k=SLICES[p.slices],i=((ev.deg%k)+k)%k,sl=dur/k;off+=i*sl;dur=sl;rate*=Math.pow(2,oc)}
   if(!voiceOk(n,t+dur/rate))return;
   const src=ctx.createBufferSource();src.buffer=buf;src.playbackRate.value=rate;
   const play=dur/rate,a=Math.min(p.attack,play*.5),r=Math.min(p.release,play*.9),pk=ev.vel*p.level,g=G(0);
@@ -621,7 +623,7 @@ const TYPES={
     params:[P('range','stride',1,4,2,1,v=>'±'+v)],
     on(n,port,ev,emit){let d=n.st.d||0;d+=Math.round((Math.random()*2-1)*n.p.range);if(d>9)d-=n.p.range+1;if(d<-4)d+=n.p.range+1;n.st.d=d;emit('out',{...ev,deg:ev.deg+d})}},
   repeater:{name:'Repeater',cat:'Logic',color:COL.blue,r:50,glyph:'echo',ins:[{id:'in',a:Math.PI,kind:EV}],outs:[{id:'out',a:0,kind:EV}],
-    params:[P('count','repeats',1,6,3,1,v=>v+'×'),P('space','spacing',1,8,3,1,v=>v+'/16'),P('decay','decay',.1,1,.6),P('climb','climb',-3,3,2,1,v=>sgn(v)+' deg')],
+    params:[P('count','repeats',1,6,3,1,v=>v+'×'),P('space','spacing',1,64,3,1,v=>v>=16&&v%4===0?v/4+' beats':v+'/16'),P('decay','decay',.1,1,.6),P('climb','climb',-3,3,2,1,v=>sgn(v)+' deg')],
     on(n,port,ev,emit){const spb=60/bpm;for(let k=0;k<n.p.count;k++)emit('out',{t:ev.t+k*n.p.space*.25*spb,deg:ev.deg+k*n.p.climb,vel:ev.vel*Math.pow(n.p.decay,k)})}},
   // every wire from out is a ghost; events only travel the live one, and step pulses move which one is live
   switcher:{name:'Switcher',cat:'Logic',color:'#7af0ff',r:46,glyph:'switch',
