@@ -1,5 +1,5 @@
 // ORY-1 desktop: the same play/index.html as the website, in its own window, with a plugins folder it watches.
-const { app, BrowserWindow, ipcMain, shell, Menu, session, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, session, powerSaveBlocker, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
@@ -248,6 +248,76 @@ async function scanVst(force) {
 }
 const vstBlocked = () => Object.entries(vstCache || {}).filter(([, e]) => e.error).map(([p, e]) => ({ path: p, error: e.error }));
 
+// adding VST3 plugins from the Rack's +: a plugin (.vst3) or a folder holding some. Each is copied into ORY-1's VST3 folder,
+// unless it's already in a folder ORY-1 scans (copying it would list it twice).
+function vst3Inside(dir, depth = 0) {
+  if (dir.toLowerCase().endsWith('.vst3')) return [dir];
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return []; }
+  const found = [];
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.name.toLowerCase().endsWith('.vst3')) found.push(full);
+    else if (e.isDirectory() && depth < 3) found.push(...vst3Inside(full, depth + 1));
+  }
+  return found;
+}
+// paths come from plugins dropped onto the window; without them, the person chooses in a dialog
+async function importVst(paths) {
+  let chosen = Array.isArray(paths) ? paths.filter(p => typeof p === 'string' && p && fs.existsSync(p)) : [];
+  if (!chosen.length) {
+    const pick = await dialog.showOpenDialog(win, {
+      title: 'Add VST3 plugins: choose a plugin (.vst3) or a folder of them',
+      properties: ['openDirectory', 'multiSelections'],
+    });
+    if (pick.canceled || !pick.filePaths.length) return { canceled: true };
+    chosen = pick.filePaths;
+  }
+  const scanned = vstFolders().map(d => path.resolve(d).toLowerCase() + path.sep);
+  const items = [];
+  for (const src of [...new Set(chosen.flatMap(p => vst3Inside(p)))]) {
+    const name = path.basename(src, path.extname(src));
+    if (scanned.some(d => path.resolve(src).toLowerCase().startsWith(d))) { items.push({ name, status: 'already' }); continue; }
+    const dest = path.join(vstDir, path.basename(src));
+    if (fs.existsSync(dest)) { items.push({ name, status: 'already' }); continue; }
+    try { await fs.promises.cp(src, dest, { recursive: true }); items.push({ name, status: 'copied' }); }
+    catch (e) { items.push({ name, status: 'failed', error: e.message }); }
+  }
+  return { items };
+}
+
+// recordings: saved where the person chooses (starting in Documents\ORY-1\Recordings, then wherever they saved last),
+// then opened in the program they picked for it in Settings, if they did (Audacity, say)
+const recPrefsFile = () => path.join(app.getPath('userData'), 'recording.json');
+function recPrefs() { try { return JSON.parse(fs.readFileSync(recPrefsFile(), 'utf8')); } catch (e) { return {}; } }
+function setRecPrefs(p) { try { fs.writeFileSync(recPrefsFile(), JSON.stringify({ ...recPrefs(), ...p })); } catch (e) { /* not kept */ } }
+const appName = file => file ? path.basename(file, path.extname(file)) : null;
+async function saveRecording(name, bytes) {
+  const prefs = recPrefs(), dir = prefs.dir && fs.existsSync(prefs.dir) ? prefs.dir : path.join(docsDir, 'Recordings');
+  fs.mkdirSync(dir, { recursive: true });
+  const pick = await dialog.showSaveDialog(win, {
+    title: 'Save recording', defaultPath: path.join(dir, String(name).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')),
+    filters: [{ name: 'WAV audio', extensions: ['wav'] }],
+  });
+  if (pick.canceled || !pick.filePath) return { canceled: true };
+  try { fs.writeFileSync(pick.filePath, Buffer.from(bytes)); } catch (e) { return { error: e.message }; }
+  setRecPrefs({ dir: path.dirname(pick.filePath) });
+  let opened = null;
+  if (prefs.app && fs.existsSync(prefs.app)) {
+    try { spawn(prefs.app, [pick.filePath], { detached: true, stdio: 'ignore' }).unref(); opened = appName(prefs.app); } catch (e) { /* saved, just not opened */ }
+  }
+  return { file: path.basename(pick.filePath), path: pick.filePath, app: opened };
+}
+async function chooseRecApp() {
+  const pick = await dialog.showOpenDialog(win, {
+    title: 'Open recordings with…', defaultPath: process.env.ProgramFiles || 'C:\\Program Files',
+    properties: ['openFile'], filters: [{ name: 'Programs', extensions: ['exe'] }],
+  });
+  if (pick.canceled || !pick.filePaths.length) return appName(recPrefs().app);
+  setRecPrefs({ app: pick.filePaths[0] });
+  return appName(pick.filePaths[0]);
+}
+
 // the hosting helper: started when a song first needs it, and again after a crash
 let vstHost = null;
 function startVstHost() {
@@ -403,6 +473,11 @@ ipcMain.handle('vst:start', () => startVstHost().catch(err => ({ error: err.mess
 ipcMain.handle('vst:call', (e, cmd) => vstCall(cmd));
 ipcMain.handle('vst:open', () => shell.openPath(vstDir));
 ipcMain.handle('vst:putState', (e, text) => putState(text));
+ipcMain.handle('vst:import', (e, paths) => importVst(paths));
+ipcMain.handle('rec:save', (e, name, bytes) => saveRecording(name, bytes));
+ipcMain.handle('rec:app', () => appName(recPrefs().app));
+ipcMain.handle('rec:chooseApp', () => chooseRecApp());
+ipcMain.handle('rec:clearApp', () => { setRecPrefs({ app: null }); return null; });
 // a plugin's editor opens in a window of the helper's, owned by ORY-1's window so it stays above it
 ipcMain.handle('vst:editor', (e, o) => {
   const h = win.getNativeWindowHandle();

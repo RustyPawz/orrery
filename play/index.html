@@ -107,6 +107,11 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
 .item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .item.wide{grid-column:1/-1}
 .rack p{color:var(--muted);font-size:10.5px;line-height:1.5;margin:6px 0 0}
+.rack [hidden]{display:none!important}
+.rackFind{position:sticky;top:-12px;z-index:1;display:block;width:100%;margin:0 0 10px;padding:7px 12px;border-radius:10px;cursor:text;box-shadow:0 8px 10px rgba(18,11,32,.94)}
+.rack h3 .add{float:right;padding:0 8px;line-height:16px;font-size:12px;border-radius:6px;letter-spacing:0;font-family:inherit}
+.rack .none{margin-top:4px}
+#recBtn.on{background:#ff5a78;border-color:#ff5a78;color:#120a22}
 .hint{position:absolute;bottom:calc(10px + env(safe-area-inset-bottom,0px));right:max(16px,env(safe-area-inset-right,0px));max-width:min(620px,70%);text-align:right;color:var(--muted);font-size:11px;pointer-events:none;line-height:1.5}
 .hint kbd{font:inherit;color:var(--fg)}
 .drop{position:absolute;inset:12px;border:2px dashed var(--lime);border-radius:18px;display:flex;align-items:center;justify-content:center;color:var(--lime);font-family:var(--font-display);letter-spacing:.15em;font-size:13px;background:rgba(10,6,20,.6);pointer-events:none;z-index:4}
@@ -120,6 +125,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
   <div class="brand"><b>ORY-1</b><span>generative modular</span><a class="by" href="https://rustypawz.github.io/fm1-HYP1/" target="_blank" rel="noopener">by RedtailWorks</a></div>
   <div class="group">
     <button id="play" type="button">Play</button>
+    <button id="recBtn" type="button" aria-pressed="false" title="Record what ORY-1 plays to a WAV file">● Rec</button>
     <label for="bpm">bpm</label><input id="bpm" type="number" min="40" max="220" value="104">
     <select id="scale" aria-label="Scale"></select>
     <select id="root" aria-label="Root note"></select>
@@ -166,6 +172,9 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
     <div id="audOpts"></div>
     <p class="mon" id="audStat"></p>
     <p>If the audio crackles, choose Stable (a bigger buffer, a little more delay), Eco effects (shorter reverbs, lighter saturation) or fewer notes per instrument.</p>
+    <p class="st" style="margin-top:8px">Recording</p>
+    <div class="row" id="recRow" hidden><button type="button" id="recApp">Open recordings with…</button><button type="button" id="recAppClear">Just save them</button></div>
+    <p id="recNote">● Rec records what you hear, after the limiter, to a WAV file (32-bit float, stereo) that Audacity and other editors open.</p>
     <p class="st" style="margin-top:8px">Background image</p>
     <div class="row"><button type="button" id="bgPick">Choose image…</button><button type="button" id="bgClear">Remove</button></div>
     <input type="file" id="bgFile" accept="image/*" hidden>
@@ -1326,6 +1335,12 @@ function syncVstPick(){const n=vstPick.node,el=vstPick.el;if(!n||!el||el.hidden)
     hits.length>shown.length?`Showing ${shown.length} of ${hits.length}. Type to narrow the list.`:`${params.length} parameters can go on a dial.`}
 
 if(VST)VST.onFlush(async()=>{await Promise.all(nodes.filter(n=>n.au&&n.au.state==='ready'&&/^vst3/.test(n.type)).map(vstSaveState));flushSave()});
+async function vstImport(paths){const r=await VST.importPlugins(Array.isArray(paths)?paths:null);if(!r||r.canceled)return;
+  if(r.error){flashMsg('Couldn’t add plugins: '+r.error);return}
+  const copied=r.items.filter(x=>x.status==='copied').map(x=>x.name),had=r.items.filter(x=>x.status==='already').map(x=>x.name),bad=r.items.filter(x=>x.status==='failed');
+  if(!r.items.length){flashMsg('No .vst3 plugins in that folder.');return}
+  flashMsg(copied.length?`Added ${copied.join(', ')}. Scanning…`:had.length?`${had.join(', ')} ${had.length>1?'are':'is'} already in a folder ORY-1 scans.`:`Couldn’t copy ${bad.map(x=>x.name).join(', ')}.`);
+  await refreshVst();if(copied.length)flashMsg(`Added ${copied.join(', ')} to the Rack.`)}
 async function refreshVst(force){if(!VST)return;try{vstList=await VST.list(force)}catch(e){vstList=[]}buildRack()}
 // a module from a plugin that isn't installed: keeps its saved data so nothing is lost, and comes back when the plugin does
 TYPES.missing={name:'Missing plugin',cat:'',color:'#8a80b0',r:40,glyph:'none',ins:[],outs:[],params:[],
@@ -1466,6 +1481,61 @@ function setBpm(v){
   if(ctx)restartGrid();syncUI();
 }
 function setKey(s,r){scaleName=s;root=r;nodes.forEach(n=>{if(n.type==='key'){n.p.scale=SCALE_NAMES.indexOf(s);n.p.root=r}});syncUI()}
+
+/* ---------- recording: what you hear, to a WAV file ----------
+   A worklet after the limiter copies each block and hands them over in batches; Stop builds a 32-bit float stereo WAV.
+   The desktop app asks where to save it (and can open it in a program you choose, such as Audacity); the website downloads it. */
+const REC_WORKLET=`registerProcessor('ory-rec',class extends AudioWorkletProcessor{
+  constructor(){super();this.on=true;this.L=[];this.R=[];this.n=0;this.port.onmessage=e=>{if(e.data==='stop')this.on=false}}
+  process(ins){if(!this.on)return false;const x=ins[0];
+    if(x&&x.length){this.L.push(x[0].slice());this.R.push((x[1]||x[0]).slice());this.n+=x[0].length}
+    if(this.n>=2048){this.port.postMessage([this.L,this.R]);this.L=[];this.R=[];this.n=0}
+    return true}})`;
+let rec=null,recWkCtx=null;
+const recBtn=document.getElementById('recBtn');
+async function startRec(){
+  if(!playing)await playBtn.onclick();if(!ctx)return;
+  let node;
+  try{
+    if(ctx.audioWorklet){
+      if(recWkCtx!==ctx){await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([REC_WORKLET],{type:'text/javascript'})));recWkCtx=ctx}
+      node=new AudioWorkletNode(ctx,'ory-rec',{numberOfInputs:1,numberOfOutputs:0,channelCount:2,channelCountMode:'explicit'});
+      node.port.onmessage=e=>{if(!rec||rec.node!==node)return;const[L,R]=e.data;for(let i=0;i<L.length;i++){rec.L.push(L[i]);rec.R.push(R[i]);rec.frames+=L[i].length}};
+    }else{
+      // where AudioWorklets aren't allowed (a page that isn't a secure context), the older script processor does the same;
+      // it only runs while connected to the speakers, and adds nothing to them
+      node=ctx.createScriptProcessor(4096,2,2);node.connect(ctx.destination);
+      node.onaudioprocess=e=>{if(!rec||rec.node!==node)return;const b=e.inputBuffer;rec.L.push(b.getChannelData(0).slice());rec.R.push(b.getChannelData(b.numberOfChannels>1?1:0).slice());rec.frames+=b.length};
+    }
+  }catch(e){flashMsg('Recording isn’t available here: '+(e.message||e));return}
+  rec={node,c:ctx,L:[],R:[],frames:0,t0:performance.now()};
+  ana.connect(node);recBtn.classList.add('on');recBtn.setAttribute('aria-pressed','true');recShow()}
+function recShow(){if(!rec){recBtn.textContent='● Rec';return}const s=Math.floor(rec.frames/rec.c.sampleRate);recBtn.textContent=`■ ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`}
+async function stopRec(){const r=rec;if(!r)return;rec=null;
+  try{ana.disconnect(r.node)}catch(e){}if(r.node.port)r.node.port.postMessage('stop');else try{r.node.disconnect()}catch(e){}
+  recBtn.classList.remove('on');recBtn.setAttribute('aria-pressed','false');recShow();
+  if(!r.frames){flashMsg('Nothing was recorded.');return}
+  const wav=wavFile(r.L,r.R,r.c.sampleRate),name=`ORY-1 ${(lib.songs[lib.cur]&&lib.songs[lib.cur].name||'recording').replace(/[<>:"/\\|?*]+/g,'')} ${recStamp()}.wav`;
+  if(window.orreryDesktop&&window.orreryDesktop.saveRecording){const res=await window.orreryDesktop.saveRecording(name,wav);
+    if(res.canceled)flashMsg('Recording not saved.');else if(res.error)flashMsg('Couldn’t save the recording: '+res.error);
+    else flashMsg(`Saved ${res.file}`+(res.app?` · opening in ${res.app}`:''))}
+  else{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([wav],{type:'audio/wav'}));a.download=name;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},2000)}}
+// the local date and time, for file names: 2026-10-27 20.11
+function recStamp(){const d=new Date(),z=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}.${z(d.getMinutes())}`}
+function wavFile(Ls,Rs,sr){const n=Ls.reduce((t,c)=>t+c.length,0),buf=new ArrayBuffer(44+n*8),v=new DataView(buf);
+  const tag=(o,t)=>{for(let i=0;i<4;i++)v.setUint8(o+i,t.charCodeAt(i))};
+  tag(0,'RIFF');v.setUint32(4,36+n*8,true);tag(8,'WAVE');tag(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,3,true);v.setUint16(22,2,true);
+  v.setUint32(24,sr,true);v.setUint32(28,sr*8,true);v.setUint16(32,8,true);v.setUint16(34,32,true);tag(36,'data');v.setUint32(40,n*8,true);
+  let o=44;for(let c=0;c<Ls.length;c++){const L=Ls[c],R=Rs[c];for(let i=0;i<L.length;i++){v.setFloat32(o,L[i],true);v.setFloat32(o+4,R[i],true);o+=8}}
+  return buf}
+recBtn.onclick=()=>rec?stopRec():startRec();
+// the clock on the button; a new audio engine (Settings) ends the recording, which is saved
+setInterval(()=>{if(!rec)return;if(rec.c!==ctx){stopRec();return}recShow()},250);
+// Settings: which program opens new recordings (desktop app)
+if(window.orreryDesktop&&window.orreryDesktop.recordingApp){const D=window.orreryDesktop,row=document.getElementById('recRow'),pick=document.getElementById('recApp'),none=document.getElementById('recAppClear'),note=document.getElementById('recNote');
+  const show=name=>{pick.textContent=name?`Open with ${name}`:'Open recordings with…';none.disabled=!name;
+    note.textContent=`● Rec records what you hear, after the limiter, to a WAV file (32-bit float, stereo). You choose where to save it`+(name?`, then it opens in ${name}.`:'. Choose a program, such as Audacity, to open each recording in it.')};
+  row.hidden=false;D.recordingApp().then(show);pick.onclick=async()=>show(await D.chooseRecordingApp());none.onclick=async()=>show(await D.clearRecordingApp())}
 
 /* ---------- persistence ---------- */
 /* songs: any number of patches, kept in this browser; the open one saves itself */
@@ -2248,7 +2318,10 @@ stage.addEventListener('dragleave',()=>{if(--dragDepth<=0){dragDepth=0;dropEl.hi
 stage.addEventListener('dragover',e=>{e.preventDefault()});
 stage.addEventListener('drop',e=>{e.preventDefault();dragDepth=0;dropEl.hidden=true;
   const[wx,wy]=evW(e),h=hit(wx,wy),files=[...(e.dataTransfer?.files||[])].filter(f=>f.type.startsWith('audio')||/\.(wav|mp3|ogg|flac|m4a|aif+)$/i.test(f.name));
-  if(!files.length){flashMsg('Drop audio files (WAV, MP3, OGG, FLAC) to make samplers');return}
+  // VST3 plugins (bundle folders or files) dropped on the desktop app are added to the Rack
+  const plugs=VST?[...(e.dataTransfer?.files||[])].filter(f=>/\.vst3$/i.test(f.name)).map(f=>VST.pathFor(f)).filter(Boolean):[];
+  if(plugs.length)vstImport(plugs);
+  if(!files.length){if(!plugs.length)flashMsg(VST?'Drop audio files (WAV, MP3, OGG, FLAC) to make samplers, or VST3 plugins to add them':'Drop audio files (WAV, MP3, OGG, FLAC) to make samplers');return}
   files.forEach((f,i)=>importFile(f,wx+i*140,wy,i===0&&h.n&&(h.n.type==='sampler'||h.n.type==='cloud')?h.n:null));
 });
 const fileIn=document.getElementById('file');
@@ -2294,7 +2367,9 @@ rootSel.onchange=()=>{setKey(scaleName,+rootSel.value);save()};
 function centerW(){const lw=rackW();return toW(lw+(W-lw)/2+(Math.random()-.5)*140,H/2+(Math.random()-.5)*140)}
 function addNode(type,p,extra){const[x,y]=centerW();const n=mk(type,x,y,p,extra);sel=n;rewire();save();if(W<=820){rackEl.hidden=true;rackBtn.setAttribute('aria-expanded','false')}return n}
 function item(label,color,fn,wide){const b=document.createElement('button');b.type='button';b.className='item'+(wide?' wide':'');b.style.setProperty('--c',color);b.innerHTML=`<i></i><span></span>`;b.querySelector('span').textContent=label;b.title=label;b.onclick=fn;return b}
-function sectionEl(title,els){const h=document.createElement('h3');h.textContent=title;rackEl.appendChild(h);const box=document.createElement('div');box.className='items';els.forEach(e=>box.appendChild(e));rackEl.appendChild(box)}
+// a section's + (when it has one) adds to it from files
+function sectionEl(title,els,add){const h=document.createElement('h3');h.textContent=title;rackEl.appendChild(h);
+  if(add){const b=document.createElement('button');b.type='button';b.className='add';b.textContent='+';b.title=add.title;b.setAttribute('aria-label',add.title);b.onclick=add.fn;h.append(b)}const box=document.createElement('div');box.className='items';els.forEach(e=>box.appendChild(e));rackEl.appendChild(box)}
 const basic=types=>types.map(t=>item(TYPES[t].name,TYPES[t].color,()=>addNode(t)));
 // the samples folder's contents (desktop only), and what clicking one in the Rack does
 let folderSamples=[];
@@ -2304,11 +2379,30 @@ async function pickFolderSample(rel){
   const target=sel&&(sel.type==='sampler'||sel.type==='cloud')?sel:null,[x,y]=centerW();useSample(sid,x,y,target);
   if(W<=820){rackEl.hidden=true;rackBtn.setAttribute('aria-expanded','false')}
 }
+// a search box over the Rack: it stays put (and keeps what's typed) while the Rack is rebuilt beneath it
+const rackFind=document.createElement('input');rackFind.type='search';rackFind.className='rackFind';rackFind.placeholder='Search the Rack';
+rackFind.setAttribute('aria-label','Search the Rack');rackFind.oninput=filterRack;rackFind.onkeydown=e=>{if(e.key==='Escape'){rackFind.value='';filterRack()}};
+// show only items matching every word typed, in their name, their tooltip (plugin vendors, file paths) or their section and
+// group headings (so "drums" or "909 kick" work); headings follow their items
+function filterRack(){const words=rackFind.value.toLowerCase().split(/\s+/).filter(Boolean);rackEl.querySelector('.none')?.remove();
+  let heading=null,headingShown=false,any=false;
+  const close=()=>{if(heading)heading.hidden=!headingShown};
+  for(const el of rackEl.children){
+    if(el===rackFind)continue;
+    if(el.tagName==='H3'){close();heading=el;headingShown=false;continue}
+    if(!el.classList.contains('items'))continue;
+    const sub=el.previousElementSibling,where=((heading?heading.firstChild.textContent:'')+' '+(sub&&sub.tagName==='H4'?sub.textContent:'')).toLowerCase();
+    let shown=0;for(const b of el.children){const text=(b.textContent+' '+(b.title||'')+' '+where).toLowerCase(),hit=words.every(w=>text.includes(w));b.hidden=!hit;if(hit)shown++}
+    el.hidden=!shown;if(sub&&sub.tagName==='H4')sub.hidden=!shown;
+    if(shown){headingShown=true;any=true}}
+  close();
+  if(words.length&&!any){const p=document.createElement('p');p.className='none';p.textContent='Nothing in the Rack matches.';rackEl.append(p)}}
+const addAudio={title:'Import audio files…',fn:()=>fileIn.click()};
 // rebuilt whenever plugins load: plugin modules join the section their category names, or get their own after the built-ins
 function buildRack(){
-rackEl.innerHTML='';
+rackEl.replaceChildren(rackFind);
 const plugIn=cat=>Object.entries(TYPES).filter(([,T])=>T.plugin&&T.cat===cat).map(([k,T])=>{const b=item(T.name,T.color,()=>addNode(k));b.title=T.name+' · plugin ('+T.plugin.file+')';return b});
-const section=(title,els)=>sectionEl(title,[...els,...plugIn(title)]);
+const section=(title,els,add)=>sectionEl(title,[...els,...plugIn(title)],add);
 section('Time',basic(['clock','pulsar','divider','mult']));
 section('Sequence',basic(['sequencer','euclid','turing','marbles','grids','roll','grid16']));
 section('Harmony',basic(['key','chord','snap','shift']));
@@ -2323,12 +2417,12 @@ section('Samples',[
   item('Glass (pitched)','#7ee8ff',()=>addNode('sampler',{mode:1,rootNote:69,release:.4},{sid:'builtin:glass'})),
   item('Break (loop)','#7ee8ff',()=>addNode('sampler',{mode:2,bars:1},{sid:'builtin:break'})),
   item('Break (slice)','#7ee8ff',()=>addNode('sampler',{mode:3,slices:2},{sid:'builtin:break'})),
-]);
+],addAudio);
 // the desktop samples folder: loose files first, then one group per subfolder
 if(window.orreryDesktop){const groups=new Map();
   for(const rel of folderSamples){const i=rel.indexOf('/'),g=i<0?'':rel.slice(0,i);if(!groups.has(g))groups.set(g,[]);groups.get(g).push(rel)}
   const it=rel=>{const b=item(sampleName(rel),'#7ee8ff',()=>pickFolderSample(rel));b.title=rel+' · adds a Sampler, or swaps the sound of the selected Sampler or Cloud';return b};
-  sectionEl('Sample folder',[item('Open samples folder','#7ee8ff',()=>window.orreryDesktop.openSamplesFolder(),true),...(groups.get('')||[]).map(it)]);
+  sectionEl('Sample folder',[item('Open samples folder','#7ee8ff',()=>window.orreryDesktop.openSamplesFolder(),true),...(groups.get('')||[]).map(it)],addAudio);
   for(const[g,list]of groups){if(!g)continue;const h4=document.createElement('h4');h4.style.setProperty('--c','#7ee8ff');h4.innerHTML='<i></i>';h4.append(g);rackEl.appendChild(h4);
     const box=document.createElement('div');box.className='items';list.forEach(rel=>box.appendChild(it(rel)));rackEl.appendChild(box)}}
 {const h=document.createElement('h3');h.textContent='Drums';rackEl.appendChild(h);
@@ -2336,13 +2430,15 @@ if(window.orreryDesktop){const groups=new Map();
     const box=document.createElement('div');box.className='items';pk.inst.forEach(([nm],ii)=>box.appendChild(item(nm,pk.color,()=>addNode('drum',{pack:pi,inst:ii}))));rackEl.appendChild(box)})}
 section('FX',Object.keys(FX).map(k=>item(FX[k].name,FAM[FX[k].fam],()=>addNode('fx_'+k))));
 // VST3 plugins found by the desktop app: instruments and effects, each adding a module that hosts it
-if(VST){const vi=(v,fx)=>{const b=item(v.name,TYPES[fx?'vst3fx':'vst3i'].color,()=>addNode(fx?'vst3fx':'vst3i',{},{data:{vst:{path:v.path,cid:v.cid,name:v.name,vendor:v.vendor}}}));b.title=`${v.name} · ${v.vendor||''} ${v.version||''}\n${v.path}`;return b};
-  sectionEl('VST3 Instruments',[...vstList.filter(v=>v.instrument).map(v=>vi(v,false)),item('Rescan plugins','#ffb86b',()=>{flashMsg('Scanning VST3 plugins…');refreshVst(true)},true)]);
-  sectionEl('VST3 Effects',[...vstList.filter(v=>!v.instrument).map(v=>vi(v,true)),item('Open VST3 folder','#ff9b6b',()=>VST.openFolder(),true)])}
+if(VST){const vi=(v,fx)=>{const b=item(v.name,TYPES[fx?'vst3fx':'vst3i'].color,()=>addNode(fx?'vst3fx':'vst3i',{},{data:{vst:{path:v.path,cid:v.cid,name:v.name,vendor:v.vendor}}}));b.title=`${v.name} · ${v.vendor||''} ${v.version||''}`+(v.sub?` · ${v.sub.split('|').join(', ')}`:'')+`\n${v.path}`;return b};
+  const addVst={title:'Add VST3 plugins: a plugin or a folder of them',fn:vstImport};
+  sectionEl('VST3 Instruments',[...vstList.filter(v=>v.instrument).map(v=>vi(v,false)),item('Rescan plugins','#ffb86b',()=>{flashMsg('Scanning VST3 plugins…');refreshVst(true)},true)],addVst);
+  sectionEl('VST3 Effects',[...vstList.filter(v=>!v.instrument).map(v=>vi(v,true)),item('Open VST3 folder','#ff9b6b',()=>VST.openFolder(),true)],addVst)}
 section('MIDI',basic(['midiin','ctlrack']));
 section('Out',[item('Speakers / channel',COL.white,()=>addNode('output')),item(TYPES.visual.name,TYPES.visual.color,()=>addNode('visual'))]);
 const builtIn=new Set([...rackEl.querySelectorAll('h3')].map(h=>h.textContent));
 [...new Set(Object.values(TYPES).filter(T=>T.plugin&&!builtIn.has(T.cat)).map(T=>T.cat))].forEach(cat=>sectionEl(cat,plugIn(cat)));
+filterRack();
 }
 buildRack();
 rackBtn.onclick=()=>{rackEl.hidden=!rackEl.hidden;rackBtn.setAttribute('aria-expanded',String(!rackEl.hidden))};

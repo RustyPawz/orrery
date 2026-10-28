@@ -1,6 +1,6 @@
 // The only bridge between the page and the computer: the plugins and samples folders, word when either changes, and
 // the file copy of the song library.
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const path = require('path');
 
 // VST3: the bridge addon copies audio between each VST3 module's SharedArrayBuffer and the hosting helper.
@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld('orreryDesktop', {
   // read once while the page starts, so it waits for the file; saves are sent and written in the background
   readLibrary: () => ipcRenderer.sendSync('library:read'),
   writeLibrary: text => ipcRenderer.send('library:write', String(text)),
+  // recordings: a save dialog, then the program chosen in Settings (if any) opens the file
+  saveRecording: (name, bytes) => ipcRenderer.invoke('rec:save', String(name), new Uint8Array(bytes)),
+  recordingApp: () => ipcRenderer.invoke('rec:app'),
+  chooseRecordingApp: () => ipcRenderer.invoke('rec:chooseApp'),
+  clearRecordingApp: () => ipcRenderer.invoke('rec:clearApp'),
   // VST3 hosting (Windows): null when the helper or the bridge isn't there
   vst: vstBridge ? {
     available: () => ipcRenderer.invoke('vst:available'),
@@ -51,6 +56,9 @@ contextBridge.exposeInMainWorld('orreryDesktop', {
     editor: o => ipcRenderer.invoke('vst:editor', o),
     // a large plugin state, kept in a file of its own: returns the name the song keeps
     putState: text => ipcRenderer.invoke('vst:putState', String(text)),
+    // the Rack's + (a dialog) or plugins dropped on the window (their paths): copied into ORY-1's VST3 folder
+    importPlugins: paths => ipcRenderer.invoke('vst:import', Array.isArray(paths) ? paths.map(String) : null),
+    pathFor: file => webUtils.getPathForFile(file),
     // the window is closing: cb saves every plugin's state, then the window closes
     onFlush: cb => ipcRenderer.on('vst:flush', async () => { try { await cb(); } finally { ipcRenderer.send('vst:flushed'); } }),
     detach: slot => vstBridge.detach(slot),
