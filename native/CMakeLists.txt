@@ -26,6 +26,7 @@ smtg_create_public_sdk_hosting_target()
 
 add_executable(ory1-vsthost
     host/main.cpp
+    ${SDK_ROOT}/public.sdk/source/common/memorystream.cpp
     ${SDK_ROOT}/public.sdk/source/vst/hosting/module_win32.cpp
     ${SDK_ROOT}/public.sdk/source/vst/hosting/plugprovider.cpp
 )

@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include "public.sdk/source/common/memorystream.h"
 #include "public.sdk/source/vst/hosting/eventlist.h"
 #include "public.sdk/source/vst/hosting/hostclasses.h"
 #include "public.sdk/source/vst/hosting/module.h"
@@ -128,11 +129,7 @@ class ComponentHandler : public IComponentHandler
 public:
 	Slot* slot = nullptr;
 	tresult PLUGIN_API beginEdit (ParamID) override { return kResultOk; }
-	tresult PLUGIN_API performEdit (ParamID id, ParamValue v) override
-	{
-		if (slot) pushEdit (*slot, id, v);
-		return kResultOk;
-	}
+	tresult PLUGIN_API performEdit (ParamID id, ParamValue v) override;
 	tresult PLUGIN_API endEdit (ParamID) override { return kResultOk; }
 	tresult PLUGIN_API restartComponent (int32) override { return kResultOk; }
 	tresult PLUGIN_API queryInterface (const TUID iid, void** obj) override
@@ -167,7 +164,9 @@ struct Slot
 	std::vector<ory::Event> pending;     // events waiting for their block, in time order
 	std::set<std::pair<int, int>> held;  // sounding notes: pitch, id
 	std::mutex editLock;
-	std::vector<std::pair<ParamID, ParamValue>> edits;
+	std::vector<std::pair<ParamID, ParamValue>> edits;   // from the plugin's editor, on their way to its processor
+	std::mutex ctlLock;
+	std::map<ParamID, ParamValue> toController;           // from ORY-1's dials, on their way to its editor (latest only)
 	double sampleRate = 48000, tempo = 120;
 	bool playing = false, flush = false, crashed = false;
 	std::atomic<bool> crashTest {false};
@@ -175,6 +174,36 @@ struct Slot
 	std::string name;
 };
 static Slot gSlots[ory::kMaxSlots];
+
+// an edit in the plugin's own editor goes to its processor, and to ORY-1 so a dial assigned to it follows
+tresult PLUGIN_API ComponentHandler::performEdit (ParamID id, ParamValue v)
+{
+	if (!slot) return kResultOk;
+	pushEdit (*slot, id, v);
+	Json j = Json::object ();
+	j["event"] = "param";
+	j["slot"] = slot->index;
+	j["id"] = (double)id;
+	j["value"] = v;
+	send (j);
+	return kResultOk;
+}
+
+// ORY-1's dial values reach the processor on the audio thread; the controller (and the editor showing it) hears about
+// them here, on the main thread, a few times a second
+static void CALLBACK syncControllers (HWND, UINT, UINT_PTR, DWORD)
+{
+	for (auto& s : gSlots)
+	{
+		if (!s.ready || !s.controller) continue;
+		std::map<ParamID, ParamValue> latest;
+		{
+			std::lock_guard<std::mutex> lk (s.ctlLock);
+			latest.swap (s.toController);
+		}
+		for (auto& [id, v] : latest) s.controller->setParamNormalized (id, v);
+	}
+}
 
 static void pushEdit (Slot& s, ParamID id, ParamValue v)
 {
@@ -240,6 +269,9 @@ static Json paramList (IEditController* ctl)
 		p["def"] = pi.defaultNormalizedValue;
 		p["value"] = ctl->getParamNormalized (pi.id);
 		p["auto"] = (pi.flags & ParameterInfo::kCanAutomate) != 0;
+		if (pi.flags & ParameterInfo::kIsBypass) p["bypass"] = true;
+		if (pi.flags & ParameterInfo::kIsProgramChange) p["program"] = true;
+		if (pi.flags & ParameterInfo::kIsReadOnly) p["readonly"] = true;
 		list.push (p);
 	}
 	return list;
@@ -262,6 +294,7 @@ static void unloadSlot (Slot& s)
 		s.pending.clear ();
 		s.held.clear ();
 		s.edits.clear ();
+		s.toController.clear ();
 		s.flush = false;
 		return;
 	}
@@ -276,6 +309,7 @@ static void unloadSlot (Slot& s)
 	s.pending.clear ();
 	s.held.clear ();
 	s.edits.clear ();
+	s.toController.clear ();
 	s.flush = false;
 }
 
@@ -309,6 +343,17 @@ static Json load (const Json& cmd)
 	if (!s.processor) { s.provider = nullptr; s.component = nullptr; s.controller = nullptr; r["error"] = "the plugin doesn't process audio"; return r; }
 	s.handler.slot = &s;
 	if (s.controller) s.controller->setComponentHandler (&s.handler);
+	// the controller starts out knowing nothing of the processor's settings: hand it the component's state, as hosts do,
+	// so the values it reports (and its editor shows) are the ones the plugin plays with
+	if (s.controller)
+	{
+		IPtr<MemoryStream> state = owned (new MemoryStream ());
+		if (s.component->getState (state) == kResultOk)
+		{
+			state->seek (0, IBStream::kIBSeekSet, nullptr);
+			s.controller->setComponentState (state);
+		}
+	}
 
 	s.sampleRate = cmd.get ("sampleRate").num (48000);
 	setupBuses (s.component, s.processor);
@@ -363,6 +408,27 @@ static void handle (const std::string& line)
 	{
 		int i = (int)cmd.get ("slot").num (-1);
 		if (i >= 0 && i < ory::kMaxSlots && gSlots[i].ready) r["params"] = paramList (gSlots[i].controller);
+		else r["error"] = "no plugin in that slot";
+	}
+	// how the plugin writes a parameter's value, e.g. "440 Hz": {slot, id, value} -> {text}
+	else if (what == "paramText")
+	{
+		int i = (int)cmd.get ("slot").num (-1);
+		if (i >= 0 && i < ory::kMaxSlots && gSlots[i].ready && gSlots[i].controller)
+		{
+			auto id = (ParamID)(uint32)(int64)cmd.get ("id").num (0);
+			String128 text {};
+			if (gSlots[i].controller->getParamStringByValue (id, cmd.get ("value").num (0), text) == kResultOk)
+			{
+				ParameterInfo pi {};
+				std::string units;
+				for (int k = 0, n = gSlots[i].controller->getParameterCount (); k < n; k++)
+					if (gSlots[i].controller->getParameterInfo (k, pi) == kResultOk && pi.id == id) { units = Steinberg::Vst::StringConvert::convert (pi.units); break; }
+				std::string t = Steinberg::Vst::StringConvert::convert (text);
+				r["text"] = units.empty () || t.find (units) != std::string::npos ? t : t + " " + units;
+			}
+			else r["error"] = "no text";
+		}
 		else r["error"] = "no plugin in that slot";
 	}
 	else if (what == "hello") { r["ok"] = true; r["version"] = (int)ory::kVersion; }
@@ -437,6 +503,8 @@ static void addEvent (Slot& s, const ory::Event& e, int offset)
 		{
 			int32 qi = 0, pi = 0;
 			if (auto* q = s.paramIn.addParameterData ((ParamID)(uint32)e.a, qi)) q->addPoint (offset, e.v, pi);
+			std::unique_lock<std::mutex> lk (s.ctlLock, std::try_to_lock);
+			if (lk) s.toController[(ParamID)(uint32)e.a] = e.v;
 			break;
 		}
 		case ory::kTransport:
@@ -634,6 +702,7 @@ static int host (const std::string& name)
 
 	MSG msg;
 	PeekMessageW (&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE); // make the message queue before the reader posts to it
+	SetTimer (nullptr, 0, 50, syncControllers);
 	gMainThread = GetCurrentThreadId ();
 	std::thread audio (audioThread);
 	std::thread reader (readerThread);

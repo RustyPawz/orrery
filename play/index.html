@@ -73,6 +73,15 @@ button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid 
 .pop .row{display:grid;grid-template-columns:1fr 1fr;gap:6px}
 .pop .row button{text-align:center}
 .pop .st{color:var(--fg);font-size:11.5px;margin:0}
+.vstPick{right:16px;top:110px;max-height:calc(100vh - 130px);overflow:auto}
+.vstPick .vpHead{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px}
+.vstPick .vpHead button{text-align:center;padding:2px 9px}
+.vstPick .vpRow{display:grid;grid-template-columns:1fr auto;gap:4px}
+.vstPick .vpRow button span{color:var(--muted);margin-right:6px}
+.vstPick .vpRow button.on{box-shadow:inset 0 0 0 1px #ffb86b}
+.vstPick label{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:10.5px}
+.vstPick .vpList{display:flex;flex-direction:column;gap:2px;max-height:min(260px,40vh);overflow:auto}
+.vstPick .vpList button{padding:5px 8px;font-size:11px}
 .pop .mon{font-variant-numeric:tabular-nums;color:#ffd25a}
 .pop .opt{display:flex;align-items:center;gap:9px;font-size:11.5px;padding:5px 2px;cursor:pointer}
 .pop .opt input{appearance:auto;width:15px;height:15px;margin:0;padding:0;accent-color:var(--lime);flex:none}
@@ -1164,7 +1173,7 @@ function vstEv(au,frame,type,a,b,v){const h=au.h,k=Atomics.load(h,2),i=k%VEVR;if
   au.evF[i]=frame;au.evI[i*3]=type;au.evI[i*3+1]=a;au.evI[i*3+2]=b;au.evV[i]=v;Atomics.store(h,2,k+1)}
 function vstBuild(n,fx){
   const au={out:G(n.p.level),sig:G(1),inp:fx?G(1):null,slot:-1,state:'loading',
-    set(p){au.out.gain.value=p.level},
+    set(p){au.out.gain.value=p.level;vstSendDials(n,au,p)},
     stop(){au.dead=true;if(au.wk){au.wk.port.postMessage('stop');try{au.wk.disconnect()}catch(e){}}
       if(au.slot>=0){VST.detach(au.slot);VST.call({cmd:'unload',slot:au.slot})}}};
   vstLoad(n,au);return au}
@@ -1183,7 +1192,10 @@ async function vstLoad(n,au){
   window.postMessage({oryVstAttach:{slot:r.slot,sab}},'*');// to the preload, which hands it to the bridge
   const wk=new AudioWorkletNode(c,'ory-vst',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[2]});
   wk.port.postMessage(sab);if(au.inp)au.inp.connect(wk);wk.connect(au.out);
-  au.wk=wk;au.state='ready';vstEv(au,-1,VEV.transport,playing?1:0,0,bpm);au.tp=playing;au.bpm=bpm}
+  au.wk=wk;au.state='ready';vstEv(au,-1,VEV.transport,playing?1:0,0,bpm);au.tp=playing;au.bpm=bpm;
+  // a new module gets its dials on the plugin's first parameters, starting where the plugin is; a saved one sets the plugin from its dials
+  if(!n.data.map){n.data.map={};vstPickable(au.params).slice(0,VST_DIALS).forEach((q,i)=>{n.data.map[i+1]=vstRef(q);n.p['p'+(i+1)]=q.value});save()}
+  au.sent={};au.set(n.hasMods?effP(n,now(),true):n.p);syncVstPick()}
 // a note: on now, off after its length (or the module's own length when the event has none)
 function vstNote(n,ev){
   const au=n.au,len=ev.len||n.p.len,midi=Math.max(0,Math.min(127,48+root+degToSemi(ev.deg)+12*n.p.oct+n.p.semi));
@@ -1207,22 +1219,83 @@ function vstStats(){const live=nodes.filter(n=>n.au&&n.au.state==='ready'&&n.au.
 const vstBtns=n=>{const au=n.au,d=TYPES[n.type].r+24;return au&&(au.state==='crashed'||au.state==='error')?[{l:'↻',dx:Math.cos(2)*d,dy:Math.sin(2)*d,r:10,on:true,col:'#ff8fa3'}]:[]};
 function vstRestart(n){if(!n.au)return;killAu(n);rewire();flashMsg(`Restarting ${titleOf(n)}…`)}
 const vstTitle=n=>{const v=n.data&&n.data.vst,au=n.au;return (v?v.name:'VST3')+(au&&au.state==='error'?' · failed':au&&au.state==='crashed'?' · crashed':au&&au.state==='loading'?' · loading':'')};
-const vstParams=fx=>[P('level','level',0,1,.8),P('oct','octave',-3,3,0,1,sgn,{sat:1,s:'oct'}),P('semi','transpose',-12,12,0,1,v=>sgn(v)+'st',{sat:1,s:'semi'}),
+/* Dials p1…p8 each drive one plugin parameter, chosen in the picker (≡ inside the module) and kept in n.data.map[i] as
+   {id, title, steps}. Their values are the plugin's own 0…1 values, so they modulate, MIDI-learn and go in Scenes like any
+   dial; the text under a dial is the plugin's ("440 Hz"), fetched from the helper and cached. */
+const VST_DIALS=8;
+const vstRef=q=>({id:q.id,title:q.title,steps:q.steps||0});
+// parameters worth a dial: ones the plugin lets a host automate, not its bypass or program switch
+const vstPickable=list=>(list||[]).filter(q=>q.auto&&!q.bypass&&!q.program&&!q.readonly);
+function vstSendDials(n,au,p){if(au.state!=='ready'||!n.data.map)return;
+  for(let i=1;i<=VST_DIALS;i++){const m=n.data.map[i],v=p['p'+i];if(!m||v==null)continue;
+    if(au.sent[i]!=null&&Math.abs(v-au.sent[i])<1e-6)continue;au.sent[i]=v;vstEv(au,-1,VEV.param,m.id|0,0,v)}}
+function vstFmt(n,i,v){const m=n&&n.data&&n.data.map&&n.data.map[i],au=n&&n.au;if(!m)return'unassigned';
+  const key=m.id+':'+v.toFixed(3),txt=au&&au.txt;if(txt&&txt.has(key))return txt.get(key);
+  if(au&&au.state==='ready'&&!au.txtBusy){au.txtBusy=true;au.txt=txt||new Map();
+    VST.call({cmd:'paramText',slot:au.slot,id:m.id,value:+v.toFixed(3)}).then(r=>{au.txtBusy=false;if(au.txt.size>400)au.txt.clear();if(r&&r.text!=null)au.txt.set(key,r.text)})}
+  return m.steps>0?Math.round(v*m.steps)+' / '+m.steps:pct(v)}
+const vstDialName=(n,k)=>{const i=/^p(\d)$/.exec(k);if(!i)return null;const m=n.data&&n.data.map&&n.data.map[i[1]];return m?m.title:'dial '+i[1]};
+const vstParams=fx=>[P('level','level',0,1,.8),
+  ...Array.from({length:VST_DIALS},(_,j)=>P('p'+(j+1),'dial '+(j+1),0,1,0,.001,(v,n)=>vstFmt(n,j+1,v),j<3?{}:{sat:1})),
+  P('oct','octave',-3,3,0,1,sgn,{sat:1,s:'oct'}),P('semi','transpose',-12,12,0,1,v=>sgn(v)+'st',{sat:1,s:'semi'}),
   P('len','note length',.02,4,.3,.01,sec,{sat:1,s:'len'})];
+// the module's buttons: ≡ inside it opens the dial picker (once the tap is over, since that tap also closes open panels);
+// a crashed or failed module also offers ↻ to restart
+const vstButtons=n=>[{l:'≡',dx:0,dy:TYPES[n.type].r*.5,r:9,on:vstPick.node===n},...vstBtns(n)];
+const vstPress=(n,i)=>{if(i===0)setTimeout(()=>openVstPick(n));else vstRestart(n)};
 if(VST){
   TYPES.vst3i={name:'VST3 Instrument',cat:'VST3',color:'#ffb86b',r:54,glyph:'hex',...voiceIO,ownData:1,params:vstParams(),
-    build:n=>vstBuild(n,false),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,btns:vstBtns,press:vstRestart,
+    build:n=>vstBuild(n,false),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,btns:vstButtons,press:vstPress,dialName:vstDialName,
     on(n,port,ev,emit){const midi=vstNote(n,ev);voiceEnv(n,ev.t,ev.vel,.005,ev.len||n.p.len);emit('hit',ev)}};
   TYPES.vst3fx={name:'VST3 Effect',cat:'VST3',color:'#ff9b6b',r:50,glyph:'hex',ownData:1,
     ins:[{id:'in',a:Math.PI,kind:AU},{id:'note',a:2.5,kind:EV,tag:'note'}],outs:[{id:'out',a:0,kind:AU}],params:vstParams(),
-    build:n=>vstBuild(n,true),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,btns:vstBtns,press:vstRestart,
+    build:n=>vstBuild(n,true),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,btns:vstButtons,press:vstPress,dialName:vstDialName,
     on(n,port,ev){vstNote(n,ev)}};
   VST.onEvent(m=>{
-    if(m.event==='crashed'){for(const n of nodes)if(n.au&&n.au.slot===m.slot&&n.au.state==='ready'){n.au.state='crashed';flashMsg(`VST3 ${n.data.vst.name} crashed. Tap ↻ to start it again.`)}}
+    // a parameter changed in the plugin's own editor: the dial on it follows, and the picker can learn it
+    if(m.event==='param'){for(const n of nodes){const au=n.au;if(!au||au.slot!==m.slot||au.state!=='ready'||!n.data.map)continue;
+      if(vstPick.node===n&&vstPick.learn){vstAssign(n,vstPick.row,{id:m.id,title:(au.params||[]).find(q=>q.id===m.id)?.title||'parameter '+m.id,steps:(au.params||[]).find(q=>q.id===m.id)?.steps||0},m.value);continue}
+      for(let i=1;i<=VST_DIALS;i++){const d=n.data.map[i];if(d&&d.id===m.id){n.p['p'+i]=m.value;au.sent[i]=m.value;save()}}}}
+    else if(m.event==='crashed'){for(const n of nodes)if(n.au&&n.au.slot===m.slot&&n.au.state==='ready'){n.au.state='crashed';flashMsg(`VST3 ${n.data.vst.name} crashed. Tap ↻ to start it again.`)}}
     // the helper itself stopped: every VST3 module loads again in a new one
     else if(m.event==='exit'){const vn=nodes.filter(n=>n.au&&/^vst3/.test(n.type));if(!vn.length)return;
       flashMsg('The VST3 helper stopped. Restarting it…');vn.forEach(n=>{n.au.slot=-1;killAu(n)});setTimeout(rewire,500)}});
 }
+/* the dial picker: the module's eight dials, and the plugin's parameters to put on them. Tap a dial row, then a parameter;
+   or switch on Learn and move a control in the plugin's editor. */
+const vstPick={node:null,row:1,learn:false,el:null,find:''};
+function vstPickEl(){if(vstPick.el)return vstPick.el;
+  const el=vstPick.el=document.createElement('div');el.className='pop vstPick';el.hidden=true;
+  el.innerHTML='<div class="vpHead"><b></b><button type="button" aria-label="Close">×</button></div><div class="vpRows"></div>'+
+    '<label><input type="checkbox"> Learn: the next control you move in the plugin goes on the chosen dial</label>'+
+    '<input type="search" placeholder="Search parameters" aria-label="Search parameters"><div class="vpList"></div><p></p>';
+  el.querySelector('.vpHead button').onclick=closeVstPick;
+  el.querySelector('label input').onchange=e=>{vstPick.learn=e.target.checked};
+  const f=el.querySelector('input[type=search]');f.oninput=()=>{vstPick.find=f.value;syncVstPick()};
+  document.body.append(el);return el}
+function openVstPick(n){const el=vstPickEl();vstPick.node=n;vstPick.row=1;vstPick.learn=false;vstPick.find='';
+  el.querySelector('label input').checked=false;el.querySelector('input[type=search]').value='';el.hidden=false;syncVstPick();
+  const au=n.au;if(au&&au.state==='ready')VST.call({cmd:'params',slot:au.slot}).then(r=>{if(r&&r.params&&n.au===au){au.params=r.params;syncVstPick()}})}
+function closeVstPick(){vstPick.node=null;vstPick.learn=false;if(vstPick.el)vstPick.el.hidden=true}
+function vstAssign(n,i,ref,value){n.data.map[i]=ref;if(value!=null){n.p['p'+i]=value;if(n.au&&n.au.sent)n.au.sent[i]=value}
+  if(n===vstPick.node)vstPick.row=i%VST_DIALS+1;save();syncVstPick()}
+function syncVstPick(){const n=vstPick.node,el=vstPick.el;if(!n||!el||el.hidden)return;
+  if(!nodes.includes(n)){closeVstPick();return}
+  const au=n.au,map=n.data.map||(n.data.map={}),params=vstPickable(au&&au.params);
+  el.querySelector('.vpHead b').textContent='Dials · '+(n.data.vst?n.data.vst.name:'VST3');
+  const rows=el.querySelector('.vpRows');rows.innerHTML='';
+  for(let i=1;i<=VST_DIALS;i++){const m=map[i],row=document.createElement('div');row.className='vpRow';
+    const b=document.createElement('button');b.type='button';b.className=i===vstPick.row?'on':'';
+    b.innerHTML='<span></span>';b.querySelector('span').textContent=i;b.append(m?m.title:'—');b.onclick=()=>{vstPick.row=i;syncVstPick()};
+    const x=document.createElement('button');x.type='button';x.textContent='×';x.title='Clear this dial';x.disabled=!m;
+    x.onclick=()=>{delete map[i];save();syncVstPick()};row.append(b,x);rows.append(row)}
+  const list=el.querySelector('.vpList'),q=vstPick.find.trim().toLowerCase();list.innerHTML='';
+  const hits=params.filter(p=>!q||p.title.toLowerCase().includes(q)),shown=hits.slice(0,200);
+  for(const p of shown){const b=document.createElement('button');b.type='button';b.textContent=p.title+(p.units?' ('+p.units+')':'');
+    b.onclick=()=>vstAssign(n,vstPick.row,vstRef(p),p.value);list.append(b)}
+  el.querySelector('p').textContent=!au||au.state!=='ready'?'The plugin is not running, so its parameters can’t be listed.':
+    hits.length>shown.length?`Showing ${shown.length} of ${hits.length}. Type to narrow the list.`:`${params.length} parameters can go on a dial.`}
+
 async function refreshVst(force){if(!VST)return;try{vstList=await VST.list(force)}catch(e){vstList=[]}buildRack()}
 // a module from a plugin that isn't installed: keeps its saved data so nothing is lost, and comes back when the plugin does
 TYPES.missing={name:'Missing plugin',cat:'',color:'#8a80b0',r:40,glyph:'none',ins:[],outs:[],params:[],
@@ -1246,6 +1319,9 @@ function prepType(T){
 Object.values(TYPES).forEach(prepType);
 const colorOf=n=>{const T=TYPES[n.type];return T.colorFn?T.colorFn(n):T.color};
 const titleOf=n=>{const T=TYPES[n.type];return n.label||(T.title?T.title(n):T.name)};
+// a dial's name: fixed by its type, unless the type names its dials per module (VST3 dials are named after what they drive)
+const dialLabel=(n,k)=>{const T=TYPES[n.type];return (T.dialName&&T.dialName(n,k))||T.pd[k].label};
+const dialShort=(n,k)=>{const T=TYPES[n.type],d=T.dialName&&T.dialName(n,k);return d?d.slice(0,7):T.pd[k].s};
 
 /* ---------- graph ---------- */
 let nodes=[],wires=[],pulses=[],notes=[],uid=1,budget=0,sel=null;
@@ -1854,7 +1930,7 @@ function drawNode(n,t,hv,dragKind){
     g.globalAlpha=o;g.strokeStyle=alpha(c,.25);g.lineWidth=1;g.beginPath();g.moveTo(x+(sx-x)*R/Math.hypot(sx-x,sy-y),y+(sy-y)*R/Math.hypot(sx-x,sy-y));g.lineTo(sx,sy);g.stroke();
     g.fillStyle='#120a22';g.beginPath();g.arc(sx,sy,12*o,0,TAU);g.fill();
     arcVal(sx,sy,8*o,fracOf(n,pd),alpha(c,active?1:.85),active?4:3,pd.bi);modDot(n,k,sx,sy,8*o,t);midiMark(n,k,sx,sy,8*o,t);
-    g.font='8px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=alpha(c,.75);g.fillText(pd.s,sx,sy+22);
+    g.font='8px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=alpha(c,.75);g.fillText(dialShort(n,k),sx,sy+22);
     g.globalAlpha=1;
   });
   else if(T.satKeys.length){g.fillStyle=alpha(c,.45);T.satA.forEach(a=>{g.beginPath();g.arc(x+Math.cos(a)*(R+7),y+Math.sin(a)*(R+7),1.6,0,TAU);g.fill()})}
@@ -1899,7 +1975,7 @@ function drawNode(n,t,hv,dragKind){
   g.font='10px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=sel===n?c:'rgba(200,190,240,.62)';
   const top=B?B.h/2:R,label=titleOf(n).toUpperCase(),yl=y-top-12-(o>.03&&T.satKeys.length?26*o+14:0);
   g.fillText(label.length>24?label.slice(0,23)+'…':label,x,yl);
-  if(hv&&hv.n===n&&hv.k){const pd=T.pd[hv.k];g.fillStyle=c;g.fillText(`${pd.label} ${pd.fmt(n.p[hv.k],n)}`,x,y+top+(o>.03&&T.satKeys.length?26*o+40:n.type==='output'?44:20))}
+  if(hv&&hv.n===n&&hv.k){const pd=T.pd[hv.k];g.fillStyle=c;g.fillText(`${dialLabel(n,hv.k)} ${pd.fmt(n.p[hv.k],n)}`,x,y+top+(o>.03&&T.satKeys.length?26*o+40:n.type==='output'?44:20))}
   const rz=(drag&&drag.kind==='resize'&&drag.n===n)||(!drag&&hover&&hover.kind==='resize'&&hover.n===n);
   if(rz){g.strokeStyle='rgba(255,255,255,.7)';g.lineWidth=3;g.setLineDash([2,4]);g.beginPath();g.arc(x,y,R,0,TAU);g.stroke();g.setLineDash([]);
     g.font='10px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle='#fff';g.fillText('size '+Math.round(SZ*100)+'%',x,y+R+14)}
@@ -2284,7 +2360,7 @@ function refreshSongs(){songSel.innerHTML='';
   songSel.value=lib.cur}
 songSel.onchange=()=>{const v=songSel.value;if(v.startsWith('demo:'))openDemo(DEMOS[+v.slice(5)]);else openSong(v)};
 function placePop(el,btn){const st=stage.getBoundingClientRect(),b=btn.getBoundingClientRect();el.style.left=Math.max(12,Math.min(b.left-st.left,st.width-el.offsetWidth-12))+'px'}
-function closePops(){setPanel.hidden=true;setBtn.setAttribute('aria-expanded','false');songMenu.hidden=true;songMenuBtn.setAttribute('aria-expanded','false');midiPanel.hidden=true;midiBtn.setAttribute('aria-expanded','false');midiBtn.classList.toggle('on',midiLearn)}
+function closePops(){closeVstPick();setPanel.hidden=true;setBtn.setAttribute('aria-expanded','false');songMenu.hidden=true;songMenuBtn.setAttribute('aria-expanded','false');midiPanel.hidden=true;midiBtn.setAttribute('aria-expanded','false');midiBtn.classList.toggle('on',midiLearn)}
 songMenuBtn.onclick=e=>{e.stopPropagation();const open=songMenu.hidden;closePops();if(open){songMenu.querySelector('[data-act="reset"]').hidden=!lib.songs[lib.cur].demo;songMenu.hidden=false;songMenuBtn.setAttribute('aria-expanded','true');placePop(songMenu,songMenuBtn)}};
 document.addEventListener('pointerdown',e=>{if(!e.target.closest('.pop,#songMenuBtn,#midiBtn,#setBtn'))closePops()});
 function renameSong(){songSel.hidden=true;songName.hidden=false;songName.value=lib.songs[lib.cur].name;songName.focus();songName.select()}
@@ -2332,7 +2408,7 @@ let midiAcc=null,midiLearn=false,midiArm=null,midiKeys=new Set(),midiErr='';
 const sameSrc=(a,b)=>a.t===b.t&&a.ch===b.ch&&a.n===b.n,sameTgt=(a,b)=>a.k===b.k&&a.node===b.node&&a.key===b.key;
 const findMap=tgt=>midiMap.find(m=>sameTgt(m.tgt,tgt));
 const srcName=x=>`${x.t==='cc'?'CC '+x.n:'note '+noteName(x.n)} · ch ${x.ch}`;
-function tgtName(x){if(x.k==='play')return'Play / Stop';const n=byId(x.node);if(!n)return'(missing module)';const pd=TYPES[n.type].pd[x.key];return`${titleOf(n)} · ${pd?pd.label:x.key}`}
+function tgtName(x){if(x.k==='play')return'Play / Stop';const n=byId(x.node);if(!n)return'(missing module)';const pd=TYPES[n.type].pd[x.key];return`${titleOf(n)} · ${pd?dialLabel(n,x.key):x.key}`}
 function setLearn(on){midiLearn=on;midiArm=null;midiLearnBtn.setAttribute('aria-pressed',String(on));midiBtn.classList.toggle('on',on);if(on&&!midiAcc)midiInit()}
 async function midiInit(){
   if(midiAcc)return;

@@ -1,6 +1,6 @@
 # VST3 hosting in the ORY-1 desktop app: plan
 
-Status: **plan approved; stages 0 (spike), 1 (proof of concept) and 2 (robustness) done.** See [Progress](#progress) at the end.
+Status: **plan approved; stages 0 (spike), 1 (proof of concept), 2 (robustness) and 3 (parameters) done.** See [Progress](#progress) at the end.
 
 Goal: in the desktop app (Windows first), a **VST3** section in the Rack lists the user's installed VST3 instruments and effects. Each one becomes a module in a patch. Notes arrive on its event input, sound comes out of its audio output, effects take audio in, a few dials drive plugin parameters, a button opens the plugin's own editor, and the plugin's state is saved with the song. The website shows these modules as placeholders.
 
@@ -245,6 +245,35 @@ The exact *D* for each engine mode is measured in stage 0.
 
 The defaults leave a margin of about two blocks; heavier plugins or a busier computer will use the self-adjustment. This hasn't been tried with heavy plugins yet: the NI instruments make no sound (see Massive X), and Kontakt needs an instrument loaded through its editor.
 
+### Stage 3: parameters (done)
+
+**The dials:**
+- Each VST3 module has 8 dials, each driving one plugin parameter. Dials 1–3 are rings; dials 4–8 bloom out with octave, transpose and note length when the module is selected.
+- A dial is named after its parameter (*VCF Freq*), and its value is shown in the plugin's own words (*90.00 %*, *440 Hz*). Those words are fetched from the helper and cached.
+- Dials are ordinary ORY-1 dials, so they can be modulated, MIDI-learned and stored in Scenes. Their values are the plugin's own 0–1 values.
+- A new module puts its dials on the first 8 parameters the plugin lets a host automate (skipping bypass and program switches), starting from the plugin's current settings, so the sound doesn't change.
+- A saved song sets the plugin from its dials when it loads.
+
+**The picker** (≡ inside the module):
+- It lists the 8 dials and the plugin's parameters, with a search box.
+- Tap a dial, then a parameter, to assign it; × clears a dial.
+- **Learn** puts the next control moved in the plugin's own editor on the chosen dial.
+
+**The plugin's editor:**
+- Values ORY-1 sends are passed to the plugin's controller (20 times a second), so its editor shows them.
+- Edits made in the editor come back to ORY-1 and move the dial assigned to that parameter.
+
+**Fixed along the way:** the SDK's PlugProvider doesn't copy the plugin's processor state into its controller, which hosts are expected to do. The mda controllers reported every parameter as 0, and a new module's dials would have reset the sound. The helper now does that copy when it loads a plugin.
+
+**Tested in the app with mda JX10:**
+- The dials took the plugin's names and settings (OSC Mix 100 %, VCF Freq 90 %).
+- Turning VCF Freq to 0.12 reached the plugin.
+- An LFO on that dial swept the plugin's value between 0.03 and 0.98.
+- Assigning through the picker worked, and so did search.
+- Assignments and values survived a page reload and were sent back to the plugin.
+
+**Not tested yet:** editor edits moving a dial, and Learn. Both need the plugin's editor (stage 4).
+
 ### Developing
 
 ```bash
@@ -258,7 +287,6 @@ node native/test-host.js "<path.vst3>" <class id> [seconds]   # play notes throu
 
 ### Next
 
-- **Stage 3:** the 8 assignable parameter dials and the parameter picker.
-- **Stage 4:** editor windows, then looking into the silent Massive X.
+- **Stage 4:** editor windows, testing editor edits moving dials and Learn, then looking into the silent Massive X.
 - **Stage 5:** saving and loading plugin state.
 - **Stage 6:** packaging and installer testing.
