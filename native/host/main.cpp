@@ -126,20 +126,39 @@ static const bool gDebug = getenv ("ORY_VSTHOST_DEBUG") != nullptr;
 struct Slot;
 static void pushEdit (Slot& s, ParamID id, ParamValue v);
 
-// what a plugin's controller calls when its own editor changes a parameter
-class ComponentHandler : public IComponentHandler
+// what a plugin's controller calls when its own editor changes something: a parameter (performEdit), many at once
+// (restartComponent, after loading a preset, say) or settings that aren't parameters at all (setDirty)
+static void reportChanged (Slot* s, bool params);
+class ComponentHandler : public IComponentHandler, public IComponentHandler2
 {
 public:
 	Slot* slot = nullptr;
 	tresult PLUGIN_API beginEdit (ParamID) override { return kResultOk; }
 	tresult PLUGIN_API performEdit (ParamID id, ParamValue v) override;
-	tresult PLUGIN_API endEdit (ParamID) override { return kResultOk; }
-	tresult PLUGIN_API restartComponent (int32) override { return kResultOk; }
+	tresult PLUGIN_API endEdit (ParamID) override { reportChanged (slot, false); return kResultOk; }
+	tresult PLUGIN_API restartComponent (int32 flags) override
+	{
+		reportChanged (slot, (flags & (kParamValuesChanged | kReloadComponent)) != 0);
+		return kResultOk;
+	}
+	tresult PLUGIN_API setDirty (TBool dirty) override
+	{
+		if (dirty) reportChanged (slot, false);
+		return kResultOk;
+	}
+	tresult PLUGIN_API requestOpenEditor (FIDString) override { return kNotImplemented; }
+	tresult PLUGIN_API startGroupEdit () override { return kResultOk; }
+	tresult PLUGIN_API finishGroupEdit () override { return kResultOk; }
 	tresult PLUGIN_API queryInterface (const TUID iid, void** obj) override
 	{
 		if (FUnknownPrivate::iidEqual (iid, IComponentHandler::iid) || FUnknownPrivate::iidEqual (iid, FUnknown::iid))
 		{
-			*obj = this;
+			*obj = static_cast<IComponentHandler*> (this);
+			return kResultOk;
+		}
+		if (FUnknownPrivate::iidEqual (iid, IComponentHandler2::iid))
+		{
+			*obj = static_cast<IComponentHandler2*> (this);
 			return kResultOk;
 		}
 		*obj = nullptr;
@@ -201,6 +220,112 @@ struct Slot
 	std::string name;
 };
 static Slot gSlots[ory::kMaxSlots];
+
+static void reportChanged (Slot* s, bool params)
+{
+	if (!s) return;
+	Json j = Json::object ();
+	j["event"] = "changed";
+	j["slot"] = s->index;
+	j["params"] = params;
+	send (j);
+}
+
+//------------------------------------------------------------------------
+// plugin state: what the plugin saves of itself (its preset, settings that aren't parameters), as base64 for JSON
+//------------------------------------------------------------------------
+static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static std::string toBase64 (const char* data, size_t n)
+{
+	std::string out;
+	out.reserve ((n + 2) / 3 * 4);
+	for (size_t i = 0; i < n; i += 3)
+	{
+		uint32_t v = (uint8_t)data[i] << 16 | (i + 1 < n ? (uint8_t)data[i + 1] << 8 : 0) | (i + 2 < n ? (uint8_t)data[i + 2] : 0);
+		out += kB64[v >> 18 & 63];
+		out += kB64[v >> 12 & 63];
+		out += i + 1 < n ? kB64[v >> 6 & 63] : '=';
+		out += i + 2 < n ? kB64[v & 63] : '=';
+	}
+	return out;
+}
+
+static std::string fromBase64 (const std::string& in)
+{
+	int map[256];
+	for (int& m : map) m = -1;
+	for (int i = 0; i < 64; i++) map[(uint8_t)kB64[i]] = i;
+	std::string out;
+	out.reserve (in.size () * 3 / 4);
+	uint32_t v = 0;
+	int bits = 0;
+	for (unsigned char c : in)
+	{
+		if (map[c] < 0) continue;
+		v = v << 6 | map[c];
+		bits += 6;
+		if (bits >= 8)
+		{
+			bits -= 8;
+			out += (char)(v >> bits & 0xff);
+		}
+	}
+	return out;
+}
+
+// the component's or the controller's state, as base64 ("" when it has none)
+static std::string saveState (FUnknown* part, bool controller)
+{
+	IPtr<MemoryStream> stream = owned (new MemoryStream ());
+	tresult r = controller ? static_cast<IEditController*> (part)->getState (stream) : static_cast<IComponent*> (part)->getState (stream);
+	if (r != kResultOk) return {};
+	return toBase64 (stream->getData (), (size_t)stream->getSize ());
+}
+
+// a state saved earlier, given back to the plugin: the component's to the component and (so its editor and parameters
+// agree) to the controller, then the controller's own
+static void restoreState (Slot& s, const std::string& comp, const std::string& ctrl)
+{
+	if (!comp.empty ())
+	{
+		std::string bytes = fromBase64 (comp);
+		IPtr<MemoryStream> a = owned (new MemoryStream (bytes.data (), (TSize)bytes.size ()));
+		s.component->setState (a);
+		if (s.controller)
+		{
+			IPtr<MemoryStream> b = owned (new MemoryStream (bytes.data (), (TSize)bytes.size ()));
+			s.controller->setComponentState (b);
+		}
+	}
+	if (!ctrl.empty () && s.controller)
+	{
+		std::string bytes = fromBase64 (ctrl);
+		IPtr<MemoryStream> c = owned (new MemoryStream (bytes.data (), (TSize)bytes.size ()));
+		s.controller->setState (c);
+	}
+}
+
+// a large state is kept in a file of its own (ORY-1 passes its path): {"comp": "...", "ctrl": "..."}
+static bool readStateFile (const std::string& path, std::string& comp, std::string& ctrl)
+{
+	int n = MultiByteToWideChar (CP_UTF8, 0, path.data (), (int)path.size (), nullptr, 0);
+	std::wstring w (n, L'\0');
+	MultiByteToWideChar (CP_UTF8, 0, path.data (), (int)path.size (), w.data (), n);
+	HANDLE f = CreateFileW (w.c_str (), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+	if (f == INVALID_HANDLE_VALUE) return false;
+	LARGE_INTEGER size {};
+	GetFileSizeEx (f, &size);
+	std::string text ((size_t)size.QuadPart, '\0');
+	DWORD got = 0;
+	bool ok = ReadFile (f, text.data (), (DWORD)text.size (), &got, nullptr) && got == text.size ();
+	CloseHandle (f);
+	if (!ok) return false;
+	Json j = Json::parse (text);
+	comp = j.get ("comp").str ();
+	ctrl = j.get ("ctrl").str ();
+	return true;
+}
 
 //------------------------------------------------------------------------
 // editor windows: the plugin's own interface, in a window ORY-1's window owns (so it stays above ORY-1 and minimises with it)
@@ -551,6 +676,17 @@ static Json load (const Json& cmd)
 	}
 
 	s.sampleRate = cmd.get ("sampleRate").num (48000);
+	bool restored = false;
+	{
+		std::string comp = cmd.get ("comp").str (), ctrl = cmd.get ("ctrl").str ();
+		if (comp.empty () && ctrl.empty () && !cmd.get ("stateFile").str ().empty () && !readStateFile (cmd.get ("stateFile").str (), comp, ctrl))
+			r["stateError"] = "the saved state file is missing";
+		if (!comp.empty () || !ctrl.empty ())
+		{
+			restoreState (s, comp, ctrl);
+			restored = true;
+		}
+	}
 	setupBuses (s.component, s.processor);
 	ProcessSetup setup {kRealtime, kSample32, ory::kQuantum, s.sampleRate};
 	if (s.processor->setupProcessing (setup) != kResultOk)
@@ -582,6 +718,7 @@ static Json load (const Json& cmd)
 	r["inputs"] = s.inChannels;
 	r["outputs"] = s.outChannels;
 	r["latency"] = (int)s.processor->getLatencySamples ();
+	r["restored"] = restored;
 	r["params"] = paramList (s.controller);
 	return r;
 }
@@ -637,6 +774,16 @@ static void handle (const std::string& line)
 		int i = (int)cmd.get ("slot").num (-1);
 		if (i >= 0 && i < ory::kMaxSlots) closeEditor (gSlots[i], true);
 		r["ok"] = true;
+	}
+	else if (what == "getState")
+	{
+		int i = (int)cmd.get ("slot").num (-1);
+		if (i >= 0 && i < ory::kMaxSlots && gSlots[i].ready)
+		{
+			r["comp"] = saveState (gSlots[i].component, false);
+			r["ctrl"] = gSlots[i].controller ? saveState (gSlots[i].controller, true) : std::string ();
+		}
+		else r["error"] = "no plugin in that slot";
 	}
 	else if (what == "hello") { r["ok"] = true; r["version"] = (int)ory::kVersion; }
 	// for testing crash recovery, only with ORY_VSTHOST_DEBUG set: "crash" fails a plugin's next process call, "exit" stops the helper

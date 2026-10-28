@@ -1182,10 +1182,12 @@ async function vstLoad(n,au){
   const fail=e=>{au.state='error';au.err=e;flashMsg(`VST3 ${info.name}: ${e}`)};
   const st=await VST.start();if(!st.ok)return fail(st.error||'the VST3 helper did not start');
   await vstWorklet();if(au.dead)return;
-  const r=await VST.call({cmd:'load',path:info.path,cid:info.cid,sampleRate:c.sampleRate});
+  const saved=info.state||{};
+  const r=await VST.call({cmd:'load',path:info.path,cid:info.cid,sampleRate:c.sampleRate,comp:saved.comp,ctrl:saved.ctrl,stateFile:info.stateFile});
   if(au.dead){if(!r.error)VST.call({cmd:'unload',slot:r.slot});return}
   if(r.error)return fail(r.error);
-  au.slot=r.slot;au.latency=r.latency;au.params=r.params;info.name=r.name||info.name;
+  if(r.stateError)flashMsg(`VST3 ${info.name}: ${r.stateError}, so it starts with its own settings`);
+  au.slot=r.slot;au.latency=r.latency;au.params=r.params;au.restored=!!r.restored;info.name=r.name||info.name;
   const sab=new SharedArrayBuffer(VOFF.size);au.h=new Int32Array(sab,0,16);
   au.evF=new Float64Array(sab,VOFF.evF,VEVR);au.evI=new Int32Array(sab,VOFF.evI,VEVR*3);au.evV=new Float32Array(sab,VOFF.evV,VEVR);
   au.h[5]=VST_D[setv.audio]||VST_D.balanced;
@@ -1206,7 +1208,24 @@ function vstNote(n,ev){
 // Blocks that come back too late play as silence: when that keeps happening, the module waits longer for its blocks
 // (notes still land on time; an effect's sound gets later), up to VST_DMAX.
 const VST_DMAX=32;
+/* A plugin's state (its preset and settings, including ones no dial shows) is saved with the song in n.data.vst: inline
+   as {comp, ctrl} (base64) when small, else in a state file named by its hash (stateFile). It's fetched when the plugin
+   says something changed, when its editor closes, every VST_STATE_EVERY seconds while the editor is open (for plugins
+   that never say), and before the window closes. */
+const VST_INLINE=64*1024,VST_STATE_EVERY=15;
+async function vstSaveState(n){const au=n.au;if(!au||au.state!=='ready'||au.saving)return;au.saving=true;
+  try{const r=await VST.call({cmd:'getState',slot:au.slot});if(!r||r.error||n.au!==au)return;
+    const info=n.data.vst,key=(r.comp||'')+'|'+(r.ctrl||'');if(key===au.lastState)return;au.lastState=key;
+    if(key.length>VST_INLINE){info.stateFile=await VST.putState(JSON.stringify({comp:r.comp,ctrl:r.ctrl}));delete info.state}
+    else{info.state={comp:r.comp,ctrl:r.ctrl};delete info.stateFile}
+    save()}finally{au.saving=false}}
+// the plugin changed (an edit, a preset, a setting): save its state soon, and if many parameters changed, move the dials
+async function vstChanged(n,params){const au=n.au;if(!au||au.state!=='ready')return;
+  clearTimeout(au.stTm);au.stTm=setTimeout(()=>vstSaveState(n),700);
+  if(!params||!n.data.map)return;const r=await VST.call({cmd:'params',slot:au.slot});if(!r||!r.params||n.au!==au)return;au.params=r.params;
+  for(let i=1;i<=VST_DIALS;i++){const m=n.data.map[i],q=m&&r.params.find(q=>q.id===m.id);if(q){n.p['p'+i]=q.value;au.sent[i]=q.value}}save()}
 function vstTick(n,t){const au=n.au;if(!au||au.state!=='ready')return;
+  if(au.edOpen&&t-(au.stT||0)>VST_STATE_EVERY){au.stT=t;vstSaveState(n)}
   if(au.tp!==playing||au.bpm!==bpm){if(au.tp&&!playing)vstEv(au,-1,VEV.allOff,0,0,0);vstEv(au,-1,VEV.transport,playing?1:0,0,bpm);au.tp=playing;au.bpm=bpm}
   if(t-(au.lateT||0)<2)return;au.lateT=t;const late=au.h[4],D=au.h[5];
   if(late-(au.lateN??late)>=2&&D<VST_DMAX){au.h[5]=Math.min(VST_DMAX,D+2);console.info(`[ORY-1 VST3] ${titleOf(n)}: late blocks, now waiting ${au.h[5]} blocks`)}
@@ -1261,7 +1280,8 @@ if(VST){
       // Learn takes the first control moved, then switches off (a drag sends a stream of edits)
       if(vstPick.node===n&&vstPick.learn){vstPick.learn=false;if(vstPick.el)vstPick.el.querySelector('label input').checked=false;vstAssign(n,vstPick.row,{id:m.id,title:(au.params||[]).find(q=>q.id===m.id)?.title||'parameter '+m.id,steps:(au.params||[]).find(q=>q.id===m.id)?.steps||0},m.value);continue}
       for(let i=1;i<=VST_DIALS;i++){const d=n.data.map[i];if(d&&d.id===m.id){n.p['p'+i]=m.value;au.sent[i]=m.value;save()}}}}
-    else if(m.event==='editor'&&!m.open){for(const n of nodes)if(n.au&&n.au.slot===m.slot){n.au.edOpen=false;n.data.edPos={x:m.x,y:m.y};save()}}
+    else if(m.event==='editor'&&!m.open){for(const n of nodes)if(n.au&&n.au.slot===m.slot){n.au.edOpen=false;n.data.edPos={x:m.x,y:m.y};vstSaveState(n);save()}}
+    else if(m.event==='changed'){for(const n of nodes)if(n.au&&n.au.slot===m.slot)vstChanged(n,m.params)}
     else if(m.event==='crashed'){for(const n of nodes)if(n.au&&n.au.slot===m.slot&&n.au.state==='ready'){n.au.state='crashed';flashMsg(`VST3 ${n.data.vst.name} crashed. Tap ↻ to start it again.`)}}
     // the helper itself stopped: every VST3 module loads again in a new one
     else if(m.event==='exit'){const vn=nodes.filter(n=>n.au&&/^vst3/.test(n.type));if(!vn.length)return;
@@ -1302,6 +1322,7 @@ function syncVstPick(){const n=vstPick.node,el=vstPick.el;if(!n||!el||el.hidden)
   el.querySelector('p').textContent=!au||au.state!=='ready'?'The plugin is not running, so its parameters can’t be listed.':
     hits.length>shown.length?`Showing ${shown.length} of ${hits.length}. Type to narrow the list.`:`${params.length} parameters can go on a dial.`}
 
+if(VST)VST.onFlush(async()=>{await Promise.all(nodes.filter(n=>n.au&&n.au.state==='ready'&&/^vst3/.test(n.type)).map(vstSaveState));flushSave()});
 async function refreshVst(force){if(!VST)return;try{vstList=await VST.list(force)}catch(e){vstList=[]}buildRack()}
 // a module from a plugin that isn't installed: keeps its saved data so nothing is lost, and comes back when the plugin does
 TYPES.missing={name:'Missing plugin',cat:'',color:'#8a80b0',r:40,glyph:'none',ins:[],outs:[],params:[],

@@ -1,6 +1,6 @@
 # VST3 hosting in the ORY-1 desktop app: plan
 
-Status: **plan approved; stages 0 (spike), 1 (proof of concept), 2 (robustness), 3 (parameters) and 4 (editor windows) done.** See [Progress](#progress) at the end.
+Status: **plan approved; stages 0 (spike), 1 (proof of concept), 2 (robustness), 3 (parameters), 4 (editor windows) and 5 (saving plugin state) done.** See [Progress](#progress) at the end.
 
 Goal: in the desktop app (Windows first), a **VST3** section in the Rack lists the user's installed VST3 instruments and effects. Each one becomes a module in a patch. Notes arrive on its event input, sound comes out of its audio output, effects take audio in, a few dials drive plugin parameters, a button opens the plugin's own editor, and the plugin's state is saved with the song. The website shows these modules as placeholders.
 
@@ -296,8 +296,36 @@ The defaults leave a margin of about two blocks; heavier plugins or a busier com
 - These editor tests used mouse messages posted to the editor window, not the real mouse, and captured only the helper's own windows.
 
 **Limits:**
-- **Presets and settings chosen in an editor aren't kept yet.** Saving the plugin's state with the song is stage 5. Until then, only the eight dials are saved.
+- Presets and settings chosen in an editor are kept from stage 5 on.
 - **Editor position on some screens:** it is saved in work-area coordinates. With the taskbar at the top or left of the screen, an editor may reopen offset by the taskbar's size.
+
+### Stage 5: saving plugin state with the song (done)
+
+**What's saved:** each VST3 module's song data (`n.data.vst`) holds the plugin's own state: its preset and its settings, including ones no dial shows. Following the VST3 rules, it is saved as the component's state and the controller's state, both base64.
+- **Small states** (64 KB or less) sit in the song itself.
+- **Larger ones** go in `Documents\ORY-1\vst-states\<sha256>.vststate`, and the song keeps the hash (`stateFile`). Identical states share a file. The desktop app checks the name and gives the helper the path.
+
+**When it's saved:**
+- **When the plugin reports a change.** That covers an edit, a preset or a setting (`endEdit`, `restartComponent`, `IComponentHandler2::setDirty`). Saving waits 0.7 seconds, so a drag is saved once. When many parameters change at once, after loading a preset for example, the dials also update to the plugin's new values.
+- **When its editor closes,** and every 15 seconds while an editor is open, for plugins that don't report changes. A state identical to the last one isn't saved again.
+- **Before the window closes:** the desktop app holds the close, the page saves every plugin's state and then the song, and the window closes. If saving hangs, it closes after 5 seconds anyway.
+
+**Loading:**
+- The helper gives the state back before switching the plugin on: the component's state goes to the component and to the controller, then the controller's own state to the controller. The dials are then sent too.
+- If a song's state file is missing, the plugin starts with its own settings and ORY-1 says so.
+
+**Tested in the app:**
+- **Replika XT** (a 7 KB state, kept inline):
+  - Saturation, which is on no dial, was turned from 0 to 1 in its editor. After a page reload, which starts a new helper, the plugin came back at 1.
+  - Mix, taken off every dial, was changed from 0.605 to 0.680 and the window closed straight away. After relaunching ORY-1 it came back at 0.680. That shows the save-before-close works.
+- **Massive X** (a 40 KB state): its state was written to a state file (39,929 bytes, named by its hash), the song pointed at it, and after a reload the helper restored from the file. It was then re-saved inline, as it is under 64 KB.
+- **A song pointing at a missing state file:** the plugin loaded with its own settings, with the message *the saved state file is missing, so it starts with its own settings*.
+- **Kontakt 8** with no instrument loaded has a 5 KB state. A Kontakt instrument, which would use a state file, wasn't tried, because loading one needs its own library browser.
+
+**Limits:**
+- **State files are never deleted,** even when no song uses them any more. Each saved change of a large state adds a file. A clean-up that keeps only the files songs use is a possible follow-up.
+- **Exported songs** (`.ory1.json`) carry inline states but not state files. A song with a large state opens on another computer with the plugin's own settings.
+- **Reloading the page** (View → Reload) doesn't wait for a final save as closing does. It relies on the change reports, the 0.7-second save, and the 15-second save while an editor is open.
 
 ### Developing
 
@@ -312,5 +340,4 @@ node native/test-host.js "<path.vst3>" <class id> [seconds]   # play notes throu
 
 ### Next
 
-- **Stage 5:** saving and loading plugin state.
 - **Stage 6:** packaging and installer testing.

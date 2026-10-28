@@ -49,6 +49,10 @@ contextBridge.exposeInMainWorld('orreryDesktop', {
     call: cmd => ipcRenderer.invoke('vst:call', cmd),
     // {slot, title, x, y}: the plugin's own editor window
     editor: o => ipcRenderer.invoke('vst:editor', o),
+    // a large plugin state, kept in a file of its own: returns the name the song keeps
+    putState: text => ipcRenderer.invoke('vst:putState', String(text)),
+    // the window is closing: cb saves every plugin's state, then the window closes
+    onFlush: cb => ipcRenderer.on('vst:flush', async () => { try { await cb(); } finally { ipcRenderer.send('vst:flushed'); } }),
     detach: slot => vstBridge.detach(slot),
     onEvent: cb => ipcRenderer.on('vst:event', (e, msg) => cb(msg)),
   } : null,

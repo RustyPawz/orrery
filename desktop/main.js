@@ -177,6 +177,16 @@ const hostExe = path.join(nativeDir, 'ory1-vsthost.exe');
 const vstAvailable = () => process.platform === 'win32' && fs.existsSync(hostExe);
 let vstDir = '';
 function prepareVstDir() { vstDir = path.join(docsDir, 'VST3'); fs.mkdirSync(vstDir, { recursive: true }); }
+// a plugin's saved state, when it's too big to sit in the song itself (samplers can save megabytes), goes in
+// Documents\ORY-1\vst-states, named by its contents' hash: songs refer to it by that name, and identical states share a file
+const statesDir = () => path.join(docsDir, 'vst-states');
+const stateName = /^[0-9a-f]{64}$/;
+function putState(text) {
+  const hash = require('crypto').createHash('sha256').update(String(text)).digest('hex');
+  const file = path.join(statesDir(), hash + '.vststate');
+  if (!fs.existsSync(file)) { fs.mkdirSync(statesDir(), { recursive: true }); fs.writeFileSync(file + '.tmp', String(text)); fs.renameSync(file + '.tmp', file); }
+  return hash;
+}
 function vstFolders() {
   const common = process.env.CommonProgramFiles || 'C:\\Program Files\\Common Files';
   const local = process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'Common', 'VST3') : null;
@@ -275,6 +285,8 @@ function startVstHost() {
 }
 function vstCall(cmd) {
   if (!vstHost) return Promise.resolve({ error: 'the VST3 helper is not running' });
+  // the page names a state file by its hash; the helper gets the path
+  if (cmd.stateFile) cmd = { ...cmd, stateFile: stateName.test(cmd.stateFile) ? path.join(statesDir(), cmd.stateFile + '.vststate') : '' };
   const h = vstHost, id = h.nextId++;
   return new Promise(resolve => { h.waiting.set(id, resolve); h.child.stdin.write(JSON.stringify({ ...cmd, id }) + '\n'); });
 }
@@ -331,7 +343,19 @@ function createWindow() {
   });
   if (b.maximized) win.maximize();
   win.once('ready-to-show', () => win.show());
-  win.on('close', saveBounds);
+  // before the window closes, the page asks each VST3 plugin for its state and saves the song (a few seconds at most)
+  let flushed = false;
+  win.on('close', e => {
+    saveBounds();
+    if (flushed || !vstHost) return;
+    e.preventDefault();
+    flushed = true;
+    let closed = false;
+    const done = () => { if (closed) return; closed = true; ipcMain.removeListener('vst:flushed', done); if (win && !win.isDestroyed()) win.close(); };
+    ipcMain.on('vst:flushed', done);
+    setTimeout(done, 5000);
+    win.webContents.send('vst:flush');
+  });
   for (const ev of ['blur', 'minimize', 'hide']) win.on(ev, () => setTimeout(optOutOfThrottling, 150));
   // links like "by RedtailWorks" open in the real browser, not in an ORY-1 window
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
@@ -378,6 +402,7 @@ ipcMain.handle('vst:blocked', () => vstBlocked());
 ipcMain.handle('vst:start', () => startVstHost().catch(err => ({ error: err.message })));
 ipcMain.handle('vst:call', (e, cmd) => vstCall(cmd));
 ipcMain.handle('vst:open', () => shell.openPath(vstDir));
+ipcMain.handle('vst:putState', (e, text) => putState(text));
 // a plugin's editor opens in a window of the helper's, owned by ORY-1's window so it stays above it
 ipcMain.handle('vst:editor', (e, o) => {
   const h = win.getNativeWindowHandle();
