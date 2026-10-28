@@ -1,6 +1,6 @@
 # VST3 hosting in the ORY-1 desktop app: plan
 
-Status: **plan approved; stage 0 (spike) and stage 1 (proof of concept) done.** See [Progress](#progress) at the end.
+Status: **plan approved; stages 0 (spike), 1 (proof of concept) and 2 (robustness) done.** See [Progress](#progress) at the end.
 
 Goal: in the desktop app (Windows first), a **VST3** section in the Rack lists the user's installed VST3 instruments and effects. Each one becomes a module in a patch. Notes arrive on its event input, sound comes out of its audio output, effects take audio in, a few dials drive plugin parameters, a button opens the plugin's own editor, and the plugin's state is saved with the song. The website shows these modules as placeholders.
 
@@ -49,7 +49,7 @@ On the other side, the bridge thread copies blocks to and from the helper's shar
 **What that costs:**
 
 - **Instruments: no audible latency.** ORY-1 schedules notes 100–300 ms ahead with exact audio-clock times (`AUD.*.ahead`). The bridge sends each note *D* quanta early, so it sounds exactly on time.
-- **Effects: about 10–25 ms extra, depending on the engine mode, plus the plugin's own reported latency (`getLatencySamples`).** Audio going through an effect can't be known in advance. Version 1 doesn't delay the dry paths to match. A later option could offer latency compensation for parallel dry/wet patches.
+- **Effects: about 13–32 ms extra, depending on the engine mode (measured in stage 2), plus the plugin's own reported latency (`getLatencySamples`).** Audio going through an effect can't be known in advance. Version 1 doesn't delay the dry paths to match. A later option could offer latency compensation for parallel dry/wet patches.
 - **When the helper is late:** that quantum plays silence and is counted as a dropout in **Settings → Audio**, next to the existing playback stats.
 
 The exact *D* for each engine mode is measured in stage 0.
@@ -209,6 +209,42 @@ The exact *D* for each engine mode is measured in stage 0.
 - **mda's sample synths drop some note-ons.** The SDK's mda synths (DX10, JX10, Piano) ignore a note-on whose sample offset is a non-zero multiple of 16. Their sample-accurate base class hands such an event to the synth at the very end of a 16-sample slice, where it is skipped. This is a bug in the SDK samples, not in the host; real plugins don't share that code. In ORY-1 it means roughly one in 16 notes is lost on the mda test synths.
 - **Massive X is silent.** The editor (stage 4) should show why: for example, it may be unauthorised or still loading content, or it may need something from the host that ORY-1 doesn't provide yet. It is still open.
 
+### Stage 2: robustness (done)
+
+**A plugin that crashes:**
+- The helper catches the crash inside `process()` and marks the module **crashed**, with a message.
+- The module shows a **↻** button at its lower left. Tapping it loads the plugin again in a fresh slot.
+- The crashed plugin's memory is left in the helper without calling into it again, because shutting it down could crash the helper as well.
+- The other plugins keep playing throughout.
+
+**The helper itself stops:** ORY-1 starts a new helper and every VST3 module loads again, with no action needed.
+
+**Reloading the page** (View → Reload):
+- The bridge drops its slots before the page's memory goes.
+- The desktop app closes the old helper, so plugins aren't left running in it.
+- Before this fix, a reload could have let the bridge thread write into freed memory.
+
+**Settings → Audio** shows, for example, *VST3: 2 modules, effects +16 ms, no late blocks*.
+
+**Self-adjusting buffer:**
+- If a module keeps getting late blocks (2 or more in 2 seconds), it waits 2 blocks longer, up to 32 (85 ms).
+- Notes stay on time when it does; only audio through effects gets later.
+- In testing, a deliberately too-small buffer recovered within seconds.
+
+**Tested:**
+- Both crash cases were simulated in the real app with test commands that only exist when `ORY_VSTHOST_DEBUG` is set: `crash` makes a plugin's next `process()` call fail exactly as a broken plugin would, and `exit` stops the helper.
+- Recovery worked in both cases, and a page reload restarted cleanly.
+
+**Measured buffer, *D*** (Windows 11 laptop, 48 kHz, two mda plugins; each setting ran about 10–17 seconds):
+
+| Engine mode | Smallest *D* with no late blocks | Default now | Extra effect latency |
+|---|---|---|---|
+| Low latency | 4 (3 failed) | 5 | 13 ms |
+| Balanced | 4 or less | 6 | 16 ms |
+| Stable | not pushed (16 ran clean) | 12 | 32 ms |
+
+The defaults leave a margin of about two blocks; heavier plugins or a busier computer will use the self-adjustment. This hasn't been tried with heavy plugins yet: the NI instruments make no sound (see Massive X), and Kontakt needs an instrument loaded through its editor.
+
 ### Developing
 
 ```bash
@@ -218,11 +254,10 @@ node native/test-host.js "<path.vst3>" <class id> [seconds]   # play notes throu
 ```
 
 - **Copy test plugins** into `Documents\ORY-1\VST3` (or the test profile's `Documents\ORY-1\VST3`) so ORY-1 finds them.
-- **Debug output:** set `ORY_VSTHOST_DEBUG=1` to have the helper print each event as it's delivered, plus a level summary every second.
+- **Debug output:** set `ORY_VSTHOST_DEBUG=1` to have the helper print each event as it's delivered, plus a level summary every second. It also enables the `crash` and `exit` test commands, which the page can send with `orreryDesktop.vst.call({cmd: 'crash', slot})`.
 
 ### Next
 
-- **Stage 2:** helper crash recovery tested on purpose (a module shows *crashed*, and the helper restarts); late-block counts shown in **Settings → Audio**; measuring *D* in the *stable* and *responsive* modes.
 - **Stage 3:** the 8 assignable parameter dials and the parameter picker.
 - **Stage 4:** editor windows, then looking into the silent Massive X.
 - **Stage 5:** saving and loading plugin state.

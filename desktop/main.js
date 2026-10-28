@@ -279,7 +279,15 @@ function vstCall(cmd) {
   return new Promise(resolve => { h.waiting.set(id, resolve); h.child.stdin.write(JSON.stringify({ ...cmd, id }) + '\n'); });
 }
 // closing stdin is the helper's cue to shut its plugins down and exit by itself
-app.on('will-quit', () => { if (vstHost) { try { vstHost.child.stdin.end(); } catch (e) { /* gone */ } } });
+function stopVstHost() {
+  const h = vstHost;
+  if (!h) return;
+  vstHost = null; // so its exit isn't reported to the page as a crash
+  for (const res of h.waiting.values()) res({ error: 'the VST3 helper was closed' });
+  h.reject(new Error('the VST3 helper was closed'));
+  try { h.child.stdin.end(); } catch (e) { /* already gone */ }
+}
+app.on('will-quit', stopVstHost);
 
 // editors often write a file in several steps, so wait for the folder to settle before telling the page
 let watchTimer = null;
@@ -327,6 +335,8 @@ function createWindow() {
   for (const ev of ['blur', 'minimize', 'hide']) win.on(ev, () => setTimeout(optOutOfThrottling, 150));
   // links like "by RedtailWorks" open in the real browser, not in an ORY-1 window
   win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
+  // a reloaded page loads its VST3 modules again from scratch, in a fresh helper
+  win.webContents.on('did-start-navigation', e => { if (e.isMainFrame && !e.isSameDocument) stopVstHost(); });
   win.loadFile(path.join(__dirname, '..', 'play', 'index.html'));
 }
 

@@ -198,8 +198,16 @@ napi_value Detach (napi_env env, napi_callback_info info)
 	return boolean (env, true);
 }
 
+// the page is reloading or closing: its SharedArrayBuffers are about to go, so the thread must stop using them first
+void cleanup (void*)
+{
+	std::lock_guard<std::mutex> lk (lock);
+	slots.clear ();
+}
+
 napi_value Init (napi_env env, napi_value exports)
 {
+	napi_add_env_cleanup_hook (env, cleanup, nullptr);
 	napi_property_descriptor props[] = {
 	    {"connect", nullptr, Connect, nullptr, nullptr, nullptr, napi_default, nullptr},
 	    {"attach", nullptr, Attach, nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -169,7 +169,8 @@ struct Slot
 	std::mutex editLock;
 	std::vector<std::pair<ParamID, ParamValue>> edits;
 	double sampleRate = 48000, tempo = 120;
-	bool playing = false, flush = false;
+	bool playing = false, flush = false, crashed = false;
+	std::atomic<bool> crashTest {false};
 	int inChannels = 0, outChannels = 0;
 	std::string name;
 };
@@ -248,6 +249,22 @@ static void unloadSlot (Slot& s)
 {
 	s.ready = false;
 	std::lock_guard<std::mutex> lk (s.lock);
+	if (s.crashed)
+	{
+		// a plugin that crashed is in no state to be shut down: calling into it again could take the helper with it,
+		// so its memory is left behind instead, until the helper exits
+		s.crashed = false;
+		s.processor.take ();
+		s.controller.take ();
+		s.component.take ();
+		s.provider.take ();
+		s.data.unprepare ();
+		s.pending.clear ();
+		s.held.clear ();
+		s.edits.clear ();
+		s.flush = false;
+		return;
+	}
 	if (s.processor) s.processor->setProcessing (false);
 	if (s.component) s.component->setActive (false);
 	s.data.unprepare ();
@@ -349,6 +366,14 @@ static void handle (const std::string& line)
 		else r["error"] = "no plugin in that slot";
 	}
 	else if (what == "hello") { r["ok"] = true; r["version"] = (int)ory::kVersion; }
+	// for testing crash recovery, only with ORY_VSTHOST_DEBUG set: "crash" fails a plugin's next process call, "exit" stops the helper
+	else if (gDebug && what == "crash")
+	{
+		int i = (int)cmd.get ("slot").num (-1);
+		if (i >= 0 && i < ory::kMaxSlots) gSlots[i].crashTest = true;
+		r["ok"] = true;
+	}
+	else if (gDebug && what == "exit") TerminateProcess (GetCurrentProcess (), 3);
 	else r["error"] = "unknown command " + what;
 	send (r);
 }
@@ -357,10 +382,11 @@ static void handle (const std::string& line)
 // audio
 //------------------------------------------------------------------------
 // a plugin that crashes inside process() is caught here, so the helper can say which one it was
-static bool safeProcess (IAudioProcessor* p, ProcessData& d)
+static bool safeProcess (IAudioProcessor* p, ProcessData& d, bool fault)
 {
 	__try
 	{
+		if (fault) *(volatile int*)nullptr = 0; // the "crash" test command: fails here exactly as a broken plugin would
 		tresult r = p->process (d);
 		if (gDebug && r != kResultOk)
 		{
@@ -472,9 +498,10 @@ static void processBlock (Slot& s, ory::Slot& z, int b)
 	            ProcessContext::kBarPositionValid | ProcessContext::kContTimeValid | (s.playing ? ProcessContext::kPlaying : 0);
 	d.numSamples = ory::kQuantum;
 
-	if (!safeProcess (s.processor, d))
+	if (!safeProcess (s.processor, d, s.crashTest.exchange (false)))
 	{
 		s.ready = false;
+		s.crashed = true;
 		Json j = Json::object ();
 		j["event"] = "crashed";
 		j["slot"] = s.index;

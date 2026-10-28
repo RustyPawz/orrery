@@ -1140,7 +1140,9 @@ Object.assign(TYPES,{
    that much late. On the website these types don't exist, so songs show them as placeholders and keep their data. */
 const VST=window.orreryDesktop&&window.orreryDesktop.vst||null;
 const VQ=128,VRING=64,VEVR=1024,VOFF={fr:64,in:64+VRING*8};VOFF.out=VOFF.in+VRING*2*VQ*4;VOFF.evF=VOFF.out+VRING*2*VQ*4;VOFF.evI=VOFF.evF+VEVR*8;VOFF.evV=VOFF.evI+VEVR*12;VOFF.size=VOFF.evV+VEVR*4;
-const VST_D={stable:16,balanced:8,responsive:6};
+// blocks a module waits for its audio, per engine mode: about two more than the least that ran without late blocks on a
+// Windows 11 laptop. A module that still gets late blocks waits longer by itself (vstTick).
+const VST_D={stable:12,balanced:6,responsive:5};
 const VEV={on:1,off:2,param:3,allOff:4,transport:5};
 let vstList=[],vstWkCtx=null,vstWkP=null;
 const VST_WORKLET=`const Q=${VQ},RING=${VRING};
@@ -1188,22 +1190,35 @@ function vstNote(n,ev){
   if(au&&au.state==='ready'&&ctx){const sr=ctx.sampleRate,id=au.nid=((au.nid||0)+1)&0x7fffffff;
     vstEv(au,ev.t*sr,VEV.on,midi,id,Math.max(0,Math.min(1,ev.vel??.8)));vstEv(au,(ev.t+len)*sr,VEV.off,midi,id,0)}
   addNote(n,ev.t,midi,len);return midi}
-// Play and Stop, and tempo, go to the plugin; Stop also ends every note it's holding
-function vstTick(n){const au=n.au;if(!au||au.state!=='ready')return;
-  if(au.tp!==playing||au.bpm!==bpm){if(au.tp&&!playing)vstEv(au,-1,VEV.allOff,0,0,0);vstEv(au,-1,VEV.transport,playing?1:0,0,bpm);au.tp=playing;au.bpm=bpm}}
+// Play and Stop, and tempo, go to the plugin; Stop also ends every note it's holding.
+// Blocks that come back too late play as silence: when that keeps happening, the module waits longer for its blocks
+// (notes still land on time; an effect's sound gets later), up to VST_DMAX.
+const VST_DMAX=32;
+function vstTick(n,t){const au=n.au;if(!au||au.state!=='ready')return;
+  if(au.tp!==playing||au.bpm!==bpm){if(au.tp&&!playing)vstEv(au,-1,VEV.allOff,0,0,0);vstEv(au,-1,VEV.transport,playing?1:0,0,bpm);au.tp=playing;au.bpm=bpm}
+  if(t-(au.lateT||0)<2)return;au.lateT=t;const late=au.h[4],D=au.h[5];
+  if(late-(au.lateN??late)>=2&&D<VST_DMAX){au.h[5]=Math.min(VST_DMAX,D+2);console.info(`[ORY-1 VST3] ${titleOf(n)}: late blocks, now waiting ${au.h[5]} blocks`)}
+  au.lateN=late}
+// what Settings → Audio shows about VST3 modules
+function vstStats(){const live=nodes.filter(n=>n.au&&n.au.state==='ready'&&n.au.h);if(!live.length)return'';
+  const late=live.reduce((s,n)=>s+n.au.h[4],0),D=Math.max(...live.map(n=>n.au.h[5]));
+  return ` · VST3: ${live.length} module${live.length===1?'':'s'}, effects +${Math.round(D*VQ/ctx.sampleRate*1000)} ms, ${late?late+' late blocks':'no late blocks'}`}
+// a crashed or failed module offers a restart button at its lower left, clear of its ports and dials
+const vstBtns=n=>{const au=n.au,d=TYPES[n.type].r+24;return au&&(au.state==='crashed'||au.state==='error')?[{l:'↻',dx:Math.cos(2)*d,dy:Math.sin(2)*d,r:10,on:true,col:'#ff8fa3'}]:[]};
+function vstRestart(n){if(!n.au)return;killAu(n);rewire();flashMsg(`Restarting ${titleOf(n)}…`)}
 const vstTitle=n=>{const v=n.data&&n.data.vst,au=n.au;return (v?v.name:'VST3')+(au&&au.state==='error'?' · failed':au&&au.state==='crashed'?' · crashed':au&&au.state==='loading'?' · loading':'')};
 const vstParams=fx=>[P('level','level',0,1,.8),P('oct','octave',-3,3,0,1,sgn,{sat:1,s:'oct'}),P('semi','transpose',-12,12,0,1,v=>sgn(v)+'st',{sat:1,s:'semi'}),
   P('len','note length',.02,4,.3,.01,sec,{sat:1,s:'len'})];
 if(VST){
   TYPES.vst3i={name:'VST3 Instrument',cat:'VST3',color:'#ffb86b',r:54,glyph:'hex',...voiceIO,ownData:1,params:vstParams(),
-    build:n=>vstBuild(n,false),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,
+    build:n=>vstBuild(n,false),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,btns:vstBtns,press:vstRestart,
     on(n,port,ev,emit){const midi=vstNote(n,ev);voiceEnv(n,ev.t,ev.vel,.005,ev.len||n.p.len);emit('hit',ev)}};
   TYPES.vst3fx={name:'VST3 Effect',cat:'VST3',color:'#ff9b6b',r:50,glyph:'hex',ownData:1,
     ins:[{id:'in',a:Math.PI,kind:AU},{id:'note',a:2.5,kind:EV,tag:'note'}],outs:[{id:'out',a:0,kind:AU}],params:vstParams(),
-    build:n=>vstBuild(n,true),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,
+    build:n=>vstBuild(n,true),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,btns:vstBtns,press:vstRestart,
     on(n,port,ev){vstNote(n,ev)}};
   VST.onEvent(m=>{
-    if(m.event==='crashed'){for(const n of nodes)if(n.au&&n.au.slot===m.slot&&n.au.state==='ready'){n.au.state='crashed';flashMsg(`VST3 ${titleOf(n)}: the plugin crashed`)}}
+    if(m.event==='crashed'){for(const n of nodes)if(n.au&&n.au.slot===m.slot&&n.au.state==='ready'){n.au.state='crashed';flashMsg(`VST3 ${n.data.vst.name} crashed. Tap ↻ to start it again.`)}}
     // the helper itself stopped: every VST3 module loads again in a new one
     else if(m.event==='exit'){const vn=nodes.filter(n=>n.au&&/^vst3/.test(n.type));if(!vn.length)return;
       flashMsg('The VST3 helper stopped. Restarting it…');vn.forEach(n=>{n.au.slot=-1;killAu(n)});setTimeout(rewire,500)}});
@@ -2242,7 +2257,7 @@ renderSettings();
 setInterval(()=>{if(setPanel.hidden)return;if(!ctx){audStat.textContent='Audio starts when you press Play.';return}
   const lat=Math.round(((ctx.baseLatency||0)+(ctx.outputLatency||0))*1000);
   const A=audioLoad||{};
-  audStat.textContent=`Latency ~${lat} ms · ${ctx.sampleRate/1000} kHz`+(A.avg!=null?` · load ${Math.round(A.avg*100)}% (peak ${Math.round(A.peak*100)}%)`:'')+(A.drops!=null?` · ${A.drops<.5?'no dropouts':Math.round(A.drops)+' dropouts/min'}`:'')},500);
+  audStat.textContent=`Latency ~${lat} ms · ${ctx.sampleRate/1000} kHz`+(A.avg!=null?` · load ${Math.round(A.avg*100)}% (peak ${Math.round(A.peak*100)}%)`:'')+(A.drops!=null?` · ${A.drops<.5?'no dropouts':Math.round(A.drops)+' dropouts/min'}`:'')+vstStats()},500);
 setBtn.onclick=e=>{e.stopPropagation();const open=setPanel.hidden;closePops();if(open){setPanel.hidden=false;setBtn.setAttribute('aria-expanded','true');placePop(setPanel,setBtn)}};
 document.getElementById('setLow').onclick=()=>{setv={...SET_LOW};applySettings()};
 document.getElementById('setDef').onclick=()=>{setv={...SET_DEF};applySettings()};
