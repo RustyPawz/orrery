@@ -742,13 +742,14 @@ static void handle (const std::string& line)
 		if (i >= 0 && i < ory::kMaxSlots && gSlots[i].ready) r["params"] = paramList (gSlots[i].controller);
 		else r["error"] = "no plugin in that slot";
 	}
-	// how the plugin writes a parameter's value, e.g. "440 Hz": {slot, id, value} -> {text}
+	// how the plugin writes a parameter's value, e.g. "440 Hz": {slot, param, value} -> {text}
+	// ("param", not "id": every command's "id" is the request's own, for matching its reply)
 	else if (what == "paramText")
 	{
 		int i = (int)cmd.get ("slot").num (-1);
 		if (i >= 0 && i < ory::kMaxSlots && gSlots[i].ready && gSlots[i].controller)
 		{
-			auto id = (ParamID)(uint32)(int64)cmd.get ("id").num (0);
+			auto id = (ParamID)(uint32)(int64)cmd.get ("param").num (0);
 			String128 text {};
 			if (gSlots[i].controller->getParamStringByValue (id, cmd.get ("value").num (0), text) == kResultOk)
 			{

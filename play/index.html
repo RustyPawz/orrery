@@ -1197,7 +1197,10 @@ async function vstLoad(n,au){
   au.wk=wk;au.state='ready';vstEv(au,-1,VEV.transport,playing?1:0,0,bpm);au.tp=playing;au.bpm=bpm;
   // a new module gets its dials on the plugin's first parameters, starting where the plugin is; a saved one sets the plugin from its dials
   if(!n.data.map){n.data.map={};vstPickable(au.params).slice(0,VST_DIALS).forEach((q,i)=>{n.data.map[i+1]=vstRef(q);n.p['p'+(i+1)]=q.value});save()}
-  au.sent={};au.set(n.hasMods?effP(n,now(),true):n.p);syncVstPick()}
+  au.sent={};au.set(n.hasMods?effP(n,now(),true):n.p);syncVstPick();
+  // and once more shortly after: some plugins reset their other controls when one of them changes a mode (Surge XT
+  // Effects' FX Type does), which would undo dials sent at the same moment
+  setTimeout(()=>{if(n.au!==au||au.state!=='ready')return;au.sent={};au.set(n.hasMods?effP(n,now(),true):n.p)},500)}
 // a note: on now, off after its length (or the module's own length when the event has none)
 function vstNote(n,ev){
   const au=n.au,len=ev.len||n.p.len,midi=Math.max(0,Math.min(127,48+root+degToSemi(ev.deg)+12*n.p.oct+n.p.semi));
@@ -1251,7 +1254,7 @@ function vstSendDials(n,au,p){if(au.state!=='ready'||!n.data.map)return;
 function vstFmt(n,i,v){const m=n&&n.data&&n.data.map&&n.data.map[i],au=n&&n.au;if(!m)return'unassigned';
   const key=m.id+':'+v.toFixed(3),txt=au&&au.txt;if(txt&&txt.has(key))return txt.get(key);
   if(au&&au.state==='ready'&&!au.txtBusy){au.txtBusy=true;au.txt=txt||new Map();
-    VST.call({cmd:'paramText',slot:au.slot,id:m.id,value:+v.toFixed(3)}).then(r=>{au.txtBusy=false;if(au.txt.size>400)au.txt.clear();if(r&&r.text!=null)au.txt.set(key,r.text)})}
+    VST.call({cmd:'paramText',slot:au.slot,param:m.id,value:+v.toFixed(3)}).then(r=>{au.txtBusy=false;if(au.txt.size>400)au.txt.clear();if(r&&r.text!=null)au.txt.set(key,r.text)})}
   return m.steps>0?Math.round(v*m.steps)+' / '+m.steps:pct(v)}
 const vstDialName=(n,k)=>{const i=/^p(\d)$/.exec(k);if(!i)return null;const m=n.data&&n.data.map&&n.data.map[i[1]];return m?m.title:'dial '+i[1]};
 const vstParams=fx=>[P('level','level',0,1,.8),
