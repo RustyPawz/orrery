@@ -1,6 +1,6 @@
 # VST3 hosting in the ORY-1 desktop app: plan
 
-Status: **plan approved; stages 0 (spike), 1 (proof of concept), 2 (robustness), 3 (parameters), 4 (editor windows) and 5 (saving plugin state) done.** See [Progress](#progress) at the end.
+Status: **all six stages done**: spike, proof of concept, robustness, parameters, editor windows, saving plugin state, and packaging. See [Progress](#progress) at the end.
 
 Goal: in the desktop app (Windows first), a **VST3** section in the Rack lists the user's installed VST3 instruments and effects. Each one becomes a module in a patch. Notes arrive on its event input, sound comes out of its audio output, effects take audio in, a few dials drive plugin parameters, a button opens the plugin's own editor, and the plugin's state is saved with the song. The website shows these modules as placeholders.
 
@@ -327,6 +327,19 @@ The defaults leave a margin of about two blocks; heavier plugins or a busier com
 - **Exported songs** (`.ory1.json`) carry inline states but not state files. A song with a large state opens on another computer with the plugin's own settings.
 - **Reloading the page** (View → Reload) doesn't wait for a final save as closing does. It relies on the change reports, the 0.7-second save, and the 15-second save while an editor is open.
 
+### Stage 6: packaging (done)
+
+- **Build:** `npm run dist:win` builds the native parts, then the NSIS installer. electron-builder copies `ory1-vsthost.exe` and `vstbridge.node` to `resources\native` (`build.win.extraResources`), outside the asar archive.
+- **The installer:** built as *ORY-1 Setup 0.9.0-beta.1.exe*, 122 MB and unsigned like the earlier ones.
+  - For testing it was built into a scratch folder, so the existing beta installer in `dist/` wasn't overwritten.
+- **The packaged app,** run from `win-unpacked` with a separate test profile:
+  - it found the helper and bridge in `resources\native` and listed the VST3 plugins in the Rack;
+  - it played the Replika XT test song, restoring both plugins' saved states, with 1 late block in about 8,500.
+- **Installed on Windows 11** over 0.9.0-beta.1, after backing up `%APPDATA%\Orrery\Local Storage` and `Documents\ORY-1\library.json` (12 songs) to `%USERPROFILE%\ORY-1 backupsefore-vst3-2026-10-27_1906`.
+  - The installer's wizard put it in `%LOCALAPPDATA%\Programs\Orrery\ORY-1`, a subfolder of the old install's folder, and removed the old files.
+  - On first start, the installed app scanned all 15 plugin bundles and kept all 12 songs.
+  - Playing a VST3 module in the installed app was left for the person to try, so that none of their songs were changed.
+
 ### Developing
 
 ```bash
@@ -340,4 +353,4 @@ node native/test-host.js "<path.vst3>" <class id> [seconds]   # play notes throu
 
 ### Next
 
-- **Stage 6:** packaging and installer testing.
+- Possible follow-ups: cleaning up unused state files; carrying state files in exported songs; sidechain and multi-output buses; pitch bend and MPE; macOS.
