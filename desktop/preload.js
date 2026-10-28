@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('orreryDesktop', {
       return { ok: true, shm: r.shm };
     },
     call: cmd => ipcRenderer.invoke('vst:call', cmd),
+    // {slot, title, x, y}: the plugin's own editor window
+    editor: o => ipcRenderer.invoke('vst:editor', o),
     detach: slot => vstBridge.detach(slot),
     onEvent: cb => ipcRenderer.on('vst:event', (e, msg) => cb(msg)),
   } : null,

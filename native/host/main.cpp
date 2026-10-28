@@ -30,6 +30,8 @@
 #include "public.sdk/source/vst/hosting/plugprovider.h"
 #include "public.sdk/source/vst/hosting/processdata.h"
 #include "public.sdk/source/vst/utility/stringconvert.h"
+#include "pluginterfaces/gui/iplugview.h"
+#include "pluginterfaces/gui/iplugviewcontentscalesupport.h"
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
@@ -115,9 +117,10 @@ static int scan (const std::string& path)
 //------------------------------------------------------------------------
 static ory::Shm* gShm = nullptr;
 static HANDLE gWake = nullptr, gDone = nullptr;
-static DWORD gMainThread = 0;
 static std::atomic<bool> gRunning {true};
-static constexpr UINT WM_COMMAND_LINE = WM_APP + 1;
+static constexpr UINT WM_COMMAND_LINE = WM_APP + 1, WM_STDIN_CLOSED = WM_APP + 2;
+// commands are posted to a hidden window rather than the thread: Windows drops thread messages while a window is being moved or sized
+static HWND gMsgWnd = nullptr;
 static const bool gDebug = getenv ("ORY_VSTHOST_DEBUG") != nullptr;
 
 struct Slot;
@@ -147,6 +150,26 @@ public:
 	uint32 PLUGIN_API release () override { return 1000; }
 };
 
+// what a plugin's editor calls to ask for a different window size
+class PlugFrame : public IPlugFrame
+{
+public:
+	Slot* slot = nullptr;
+	tresult PLUGIN_API resizeView (IPlugView* view, ViewRect* r) override;
+	tresult PLUGIN_API queryInterface (const TUID iid, void** obj) override
+	{
+		if (FUnknownPrivate::iidEqual (iid, IPlugFrame::iid) || FUnknownPrivate::iidEqual (iid, FUnknown::iid))
+		{
+			*obj = this;
+			return kResultOk;
+		}
+		*obj = nullptr;
+		return kNoInterface;
+	}
+	uint32 PLUGIN_API addRef () override { return 1000; }
+	uint32 PLUGIN_API release () override { return 1000; }
+};
+
 struct Slot
 {
 	int index = 0;
@@ -157,6 +180,10 @@ struct Slot
 	IPtr<IAudioProcessor> processor;
 	IPtr<IEditController> controller;
 	ComponentHandler handler;
+	PlugFrame frame;
+	IPtr<IPlugView> view;                // the plugin's editor, while its window is open
+	HWND editor = nullptr;
+	bool sizing = false;                 // the window is being sized to the view (so its WM_SIZE isn't passed back)
 	HostProcessData data;
 	EventList events {512};
 	ParameterChanges paramIn {256};
@@ -174,6 +201,173 @@ struct Slot
 	std::string name;
 };
 static Slot gSlots[ory::kMaxSlots];
+
+//------------------------------------------------------------------------
+// editor windows: the plugin's own interface, in a window ORY-1's window owns (so it stays above ORY-1 and minimises with it)
+//------------------------------------------------------------------------
+static constexpr wchar_t kEditorClass[] = L"ORY1VstEditor";
+static constexpr DWORD kEditorExStyle = 0;
+
+// size a window so its inside is w x h
+static void sizeWindowTo (Slot& s, int w, int h)
+{
+	RECT rc {0, 0, w, h};
+	DWORD style = (DWORD)GetWindowLongPtrW (s.editor, GWL_STYLE);
+	AdjustWindowRectExForDpi (&rc, style, FALSE, kEditorExStyle, GetDpiForWindow (s.editor));
+	s.sizing = true;
+	SetWindowPos (s.editor, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+	s.sizing = false;
+}
+
+tresult PLUGIN_API PlugFrame::resizeView (IPlugView* view, ViewRect* r)
+{
+	if (!slot || !slot->editor || !view || !r) return kInvalidArgument;
+	if (gDebug) fprintf (stderr, "[vsthost] editor asks for %dx%d\n", r->getWidth (), r->getHeight ());
+	sizeWindowTo (*slot, r->getWidth (), r->getHeight ());
+	view->onSize (r);
+	return kResultTrue;
+}
+
+static void closeEditor (Slot& s, bool report)
+{
+	if (!s.editor) return;
+	// where the window sits when it isn't minimised (a minimised one is parked far off screen)
+	WINDOWPLACEMENT place {sizeof (WINDOWPLACEMENT)};
+	GetWindowPlacement (s.editor, &place);
+	RECT rc = place.rcNormalPosition;
+	if (s.crashed) s.view.take (); // a crashed plugin isn't called again
+	else if (s.view)
+	{
+		s.view->removed ();
+		s.view->setFrame (nullptr);
+	}
+	s.view = nullptr;
+	HWND w = s.editor;
+	s.editor = nullptr;
+	DestroyWindow (w);
+	if (!report) return;
+	Json j = Json::object ();
+	j["event"] = "editor";
+	j["slot"] = s.index;
+	j["open"] = false;
+	j["x"] = (int)rc.left;
+	j["y"] = (int)rc.top;
+	send (j);
+}
+
+static LRESULT CALLBACK editorProc (HWND w, UINT msg, WPARAM wp, LPARAM lp)
+{
+	auto* s = (Slot*)GetWindowLongPtrW (w, GWLP_USERDATA);
+	switch (msg)
+	{
+		case WM_CLOSE:
+			if (s) closeEditor (*s, true);
+			return 0;
+		case WM_SIZE:
+			// the person resized a resizable editor: the plugin may adjust the size, then lays itself out
+			if (s && s->view && !s->sizing && wp != SIZE_MINIMIZED)
+			{
+				ViewRect r {0, 0, LOWORD (lp), HIWORD (lp)};
+				ViewRect want = r;
+				if (s->view->checkSizeConstraint (&want) == kResultTrue && (want.getWidth () != r.getWidth () || want.getHeight () != r.getHeight ()))
+					sizeWindowTo (*s, want.getWidth (), want.getHeight ());
+				s->view->onSize (&want);
+			}
+			return 0;
+		case WM_DPICHANGED:
+			if (s && s->view)
+			{
+				if (auto scale = U::cast<IPlugViewContentScaleSupport> (s->view)) scale->setContentScaleFactor (HIWORD (wp) / 96.f);
+				auto* r = (RECT*)lp;
+				SetWindowPos (w, nullptr, r->left, r->top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+				ViewRect vr {};
+				if (s->view->getSize (&vr) == kResultOk) sizeWindowTo (*s, vr.getWidth (), vr.getHeight ());
+			}
+			return 0;
+	}
+	return DefWindowProcW (w, msg, wp, lp);
+}
+
+static std::wstring wide (const std::string& s)
+{
+	if (s.empty ()) return {};
+	int n = MultiByteToWideChar (CP_UTF8, 0, s.data (), (int)s.size (), nullptr, 0);
+	std::wstring w (n, L'\0');
+	MultiByteToWideChar (CP_UTF8, 0, s.data (), (int)s.size (), w.data (), n);
+	return w;
+}
+
+// {slot, owner (ORY-1's window), title, x?, y?}: opens the plugin's editor, or brings its window forward if it's open
+static Json openEditor (Slot& s, const Json& cmd)
+{
+	Json r = Json::object ();
+	if (s.editor)
+	{
+		ShowWindow (s.editor, SW_SHOWNORMAL);
+		SetForegroundWindow (s.editor);
+		r["ok"] = true;
+		return r;
+	}
+	if (!s.ready || !s.controller) { r["error"] = "the plugin isn't running"; return r; }
+	IPtr<IPlugView> view = owned (s.controller->createView (ViewType::kEditor));
+	if (!view) { r["error"] = "this plugin has no editor of its own"; return r; }
+	if (view->isPlatformTypeSupported (kPlatformTypeHWND) != kResultTrue) { r["error"] = "this plugin's editor doesn't support Windows"; return r; }
+	bool resizable = view->canResize () == kResultTrue;
+	DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | (resizable ? WS_THICKFRAME | WS_MAXIMIZEBOX : 0);
+	HWND owner = (HWND)(intptr_t)(int64)cmd.get ("owner").num (0);
+	if (owner && !IsWindow (owner)) owner = nullptr;
+	HWND w = CreateWindowExW (kEditorExStyle, kEditorClass, wide (cmd.get ("title").str ("Plugin")).c_str (), style, CW_USEDEFAULT, CW_USEDEFAULT, 200, 100,
+	                          owner, nullptr, GetModuleHandleW (nullptr), nullptr);
+	if (!w) { r["error"] = "could not make a window"; return r; }
+	SetWindowLongPtrW (w, GWLP_USERDATA, (LONG_PTR)&s);
+	s.editor = w;
+	s.view = view;
+	s.frame.slot = &s;
+	view->setFrame (&s.frame);
+	if (auto scale = U::cast<IPlugViewContentScaleSupport> (view)) scale->setContentScaleFactor (GetDpiForWindow (w) / 96.f);
+	ViewRect vr {0, 0, 400, 300};
+	view->getSize (&vr);
+	if (gDebug) fprintf (stderr, "[vsthost] editor size %dx%d at dpi %u, resizable %d\n", vr.getWidth (), vr.getHeight (), GetDpiForWindow (w), (int)resizable);
+	sizeWindowTo (s, vr.getWidth (), vr.getHeight ());
+
+	// where it was last time, if that's still on a screen; otherwise centred over ORY-1
+	RECT wr {};
+	GetWindowRect (w, &wr);
+	int ww = wr.right - wr.left, wh = wr.bottom - wr.top, x, y;
+	POINT at {(LONG)cmd.get ("x").num (-100000), (LONG)cmd.get ("y").num (-100000)};
+	if (MonitorFromPoint ({at.x + 40, at.y + 10}, MONITOR_DEFAULTTONULL)) { x = at.x; y = at.y; }
+	else
+	{
+		RECT orc {0, 0, GetSystemMetrics (SM_CXSCREEN), GetSystemMetrics (SM_CYSCREEN)};
+		if (owner) GetWindowRect (owner, &orc);
+		x = (orc.left + orc.right - ww) / 2;
+		y = (orc.top + orc.bottom - wh) / 2;
+	}
+	SetWindowPos (w, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+	if (view->attached ((void*)w, kPlatformTypeHWND) != kResultOk)
+	{
+		view->setFrame (nullptr);
+		s.view = nullptr;
+		s.editor = nullptr;
+		DestroyWindow (w);
+		r["error"] = "the plugin's editor didn't open";
+		return r;
+	}
+	if (gDebug)
+	{
+		ViewRect after {};
+		view->getSize (&after);
+		RECT cr {};
+		GetClientRect (w, &cr);
+		fprintf (stderr, "[vsthost] attached: view %dx%d, window inside %dx%d, scale support %d\n", after.getWidth (), after.getHeight (), (int)cr.right, (int)cr.bottom,
+		         (int)(bool)U::cast<IPlugViewContentScaleSupport> (view));
+	}
+	ShowWindow (w, SW_SHOW);
+	SetForegroundWindow (w);
+	r["ok"] = true;
+	return r;
+}
 
 // an edit in the plugin's own editor goes to its processor, and to ORY-1 so a dial assigned to it follows
 tresult PLUGIN_API ComponentHandler::performEdit (ParamID id, ParamValue v)
@@ -279,6 +473,7 @@ static Json paramList (IEditController* ctl)
 
 static void unloadSlot (Slot& s)
 {
+	closeEditor (s, false);
 	s.ready = false;
 	std::lock_guard<std::mutex> lk (s.lock);
 	if (s.crashed)
@@ -430,6 +625,18 @@ static void handle (const std::string& line)
 			else r["error"] = "no text";
 		}
 		else r["error"] = "no plugin in that slot";
+	}
+	else if (what == "editor")
+	{
+		int i = (int)cmd.get ("slot").num (-1);
+		if (i >= 0 && i < ory::kMaxSlots) { Json e = openEditor (gSlots[i], cmd); for (auto& [k, v] : e.obj) r[k] = v; }
+		else r["error"] = "no plugin in that slot";
+	}
+	else if (what == "closeEditor")
+	{
+		int i = (int)cmd.get ("slot").num (-1);
+		if (i >= 0 && i < ory::kMaxSlots) closeEditor (gSlots[i], true);
+		r["ok"] = true;
 	}
 	else if (what == "hello") { r["ok"] = true; r["version"] = (int)ory::kVersion; }
 	// for testing crash recovery, only with ORY_VSTHOST_DEBUG set: "crash" fails a plugin's next process call, "exit" stops the helper
@@ -676,15 +883,33 @@ static void readerThread ()
 		{
 			auto* line = new std::string (buf.substr (0, nl));
 			buf.erase (0, nl + 1);
-			PostThreadMessageW (gMainThread, WM_COMMAND_LINE, 0, (LPARAM)line);
+			PostMessageW (gMsgWnd, WM_COMMAND_LINE, 0, (LPARAM)line);
 		}
 	}
 	// ORY-1 closed the pipe: it has quit or restarted the helper
-	PostThreadMessageW (gMainThread, WM_QUIT, 0, 0);
+	PostMessageW (gMsgWnd, WM_STDIN_CLOSED, 0, 0);
+}
+
+static LRESULT CALLBACK messageProc (HWND w, UINT msg, WPARAM wp, LPARAM lp)
+{
+	if (msg == WM_COMMAND_LINE)
+	{
+		std::unique_ptr<std::string> line ((std::string*)lp);
+		handle (*line);
+		return 0;
+	}
+	if (msg == WM_STDIN_CLOSED)
+	{
+		PostQuitMessage (0);
+		return 0;
+	}
+	return DefWindowProcW (w, msg, wp, lp);
 }
 
 static int host (const std::string& name)
 {
+	// editors draw sharp on every monitor; each is told its scale (IPlugViewContentScaleSupport)
+	SetProcessDpiAwarenessContext (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 	std::wstring wname (name.begin (), name.end ());
 	HANDLE map = CreateFileMappingW (INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof (ory::Shm), wname.c_str ());
 	if (!map) return 2;
@@ -700,10 +925,22 @@ static int host (const std::string& name)
 	gHostApp = new HostApplication ();
 	PluginContextFactory::instance ().setPluginContext (gHostApp);
 
+	HINSTANCE inst = GetModuleHandleW (nullptr);
+	WNDCLASSW mc {};
+	mc.lpfnWndProc = messageProc;
+	mc.hInstance = inst;
+	mc.lpszClassName = L"ORY1VstMessages";
+	RegisterClassW (&mc);
+	gMsgWnd = CreateWindowW (mc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, inst, nullptr);
+	WNDCLASSW ec {};
+	ec.lpfnWndProc = editorProc;
+	ec.hInstance = inst;
+	ec.hCursor = LoadCursor (nullptr, IDC_ARROW);
+	ec.hbrBackground = (HBRUSH)GetStockObject (BLACK_BRUSH);
+	ec.lpszClassName = kEditorClass;
+	RegisterClassW (&ec);
+	SetTimer (gMsgWnd, 1, 50, syncControllers);
 	MSG msg;
-	PeekMessageW (&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE); // make the message queue before the reader posts to it
-	SetTimer (nullptr, 0, 50, syncControllers);
-	gMainThread = GetCurrentThreadId ();
 	std::thread audio (audioThread);
 	std::thread reader (readerThread);
 	reader.detach ();
@@ -716,12 +953,6 @@ static int host (const std::string& name)
 
 	while (GetMessageW (&msg, nullptr, 0, 0) > 0)
 	{
-		if (msg.message == WM_COMMAND_LINE && !msg.hwnd)
-		{
-			std::unique_ptr<std::string> line ((std::string*)msg.lParam);
-			handle (*line);
-			continue;
-		}
 		TranslateMessage (&msg);
 		DispatchMessageW (&msg);
 	}

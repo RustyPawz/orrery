@@ -1239,10 +1239,14 @@ const vstParams=fx=>[P('level','level',0,1,.8),
   ...Array.from({length:VST_DIALS},(_,j)=>P('p'+(j+1),'dial '+(j+1),0,1,0,.001,(v,n)=>vstFmt(n,j+1,v),j<3?{}:{sat:1})),
   P('oct','octave',-3,3,0,1,sgn,{sat:1,s:'oct'}),P('semi','transpose',-12,12,0,1,v=>sgn(v)+'st',{sat:1,s:'semi'}),
   P('len','note length',.02,4,.3,.01,sec,{sat:1,s:'len'})];
-// the module's buttons: ≡ inside it opens the dial picker (once the tap is over, since that tap also closes open panels);
-// a crashed or failed module also offers ↻ to restart
-const vstButtons=n=>[{l:'≡',dx:0,dy:TYPES[n.type].r*.5,r:9,on:vstPick.node===n},...vstBtns(n)];
-const vstPress=(n,i)=>{if(i===0)setTimeout(()=>openVstPick(n));else vstRestart(n)};
+// the module's buttons: ≡ inside it opens the dial picker (once the tap is over, since that tap also closes open panels),
+// ⧉ opens the plugin's own editor; a crashed or failed module also offers ↻ to restart
+const vstButtons=n=>{const dy=TYPES[n.type].r*.5;return[{l:'≡',dx:-11,dy,r:9,on:vstPick.node===n},{l:'⧉',dx:11,dy,r:9,on:!!(n.au&&n.au.edOpen)},...vstBtns(n)]};
+const vstPress=(n,i)=>{if(i===0)setTimeout(()=>openVstPick(n));else if(i===1)vstEditor(n);else vstRestart(n)};
+// the editor window opens where it was last closed (kept with the song), or over ORY-1
+async function vstEditor(n){const au=n.au;if(!au||au.state!=='ready'){flashMsg('The plugin isn’t running.');return}
+  const pos=n.data.edPos||{},r=await VST.editor({slot:au.slot,title:`${n.data.vst.name} · ORY-1`,x:pos.x,y:pos.y});
+  if(r&&r.error)flashMsg(`VST3 ${n.data.vst.name}: ${r.error}`);else if(n.au===au)au.edOpen=true}
 if(VST){
   TYPES.vst3i={name:'VST3 Instrument',cat:'VST3',color:'#ffb86b',r:54,glyph:'hex',...voiceIO,ownData:1,params:vstParams(),
     build:n=>vstBuild(n,false),fast:{level:LEVEL_FAST},title:vstTitle,tickMod:vstTick,btns:vstButtons,press:vstPress,dialName:vstDialName,
@@ -1254,8 +1258,10 @@ if(VST){
   VST.onEvent(m=>{
     // a parameter changed in the plugin's own editor: the dial on it follows, and the picker can learn it
     if(m.event==='param'){for(const n of nodes){const au=n.au;if(!au||au.slot!==m.slot||au.state!=='ready'||!n.data.map)continue;
-      if(vstPick.node===n&&vstPick.learn){vstAssign(n,vstPick.row,{id:m.id,title:(au.params||[]).find(q=>q.id===m.id)?.title||'parameter '+m.id,steps:(au.params||[]).find(q=>q.id===m.id)?.steps||0},m.value);continue}
+      // Learn takes the first control moved, then switches off (a drag sends a stream of edits)
+      if(vstPick.node===n&&vstPick.learn){vstPick.learn=false;if(vstPick.el)vstPick.el.querySelector('label input').checked=false;vstAssign(n,vstPick.row,{id:m.id,title:(au.params||[]).find(q=>q.id===m.id)?.title||'parameter '+m.id,steps:(au.params||[]).find(q=>q.id===m.id)?.steps||0},m.value);continue}
       for(let i=1;i<=VST_DIALS;i++){const d=n.data.map[i];if(d&&d.id===m.id){n.p['p'+i]=m.value;au.sent[i]=m.value;save()}}}}
+    else if(m.event==='editor'&&!m.open){for(const n of nodes)if(n.au&&n.au.slot===m.slot){n.au.edOpen=false;n.data.edPos={x:m.x,y:m.y};save()}}
     else if(m.event==='crashed'){for(const n of nodes)if(n.au&&n.au.slot===m.slot&&n.au.state==='ready'){n.au.state='crashed';flashMsg(`VST3 ${n.data.vst.name} crashed. Tap ↻ to start it again.`)}}
     // the helper itself stopped: every VST3 module loads again in a new one
     else if(m.event==='exit'){const vn=nodes.filter(n=>n.au&&/^vst3/.test(n.type));if(!vn.length)return;

@@ -378,6 +378,12 @@ ipcMain.handle('vst:blocked', () => vstBlocked());
 ipcMain.handle('vst:start', () => startVstHost().catch(err => ({ error: err.message })));
 ipcMain.handle('vst:call', (e, cmd) => vstCall(cmd));
 ipcMain.handle('vst:open', () => shell.openPath(vstDir));
+// a plugin's editor opens in a window of the helper's, owned by ORY-1's window so it stays above it
+ipcMain.handle('vst:editor', (e, o) => {
+  const h = win.getNativeWindowHandle();
+  const owner = h.length >= 8 ? Number(h.readBigUInt64LE(0)) : h.readUInt32LE(0);
+  return vstCall({ cmd: 'editor', slot: o.slot, title: String(o.title || ''), x: o.x, y: o.y, owner });
+});
 ipcMain.on('audio:playing', (e, on) => { setPlaying(!!on); optOutOfThrottling(); });
 ipcMain.on('library:read', e => { e.returnValue = readLibrary(); });
 ipcMain.on('library:write', (e, text) => { libraryText = String(text); clearTimeout(libraryTimer); libraryTimer = setTimeout(writeLibrary, 1000); });

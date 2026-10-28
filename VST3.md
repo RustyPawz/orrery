@@ -1,6 +1,6 @@
 # VST3 hosting in the ORY-1 desktop app: plan
 
-Status: **plan approved; stages 0 (spike), 1 (proof of concept), 2 (robustness) and 3 (parameters) done.** See [Progress](#progress) at the end.
+Status: **plan approved; stages 0 (spike), 1 (proof of concept), 2 (robustness), 3 (parameters) and 4 (editor windows) done.** See [Progress](#progress) at the end.
 
 Goal: in the desktop app (Windows first), a **VST3** section in the Rack lists the user's installed VST3 instruments and effects. Each one becomes a module in a patch. Notes arrive on its event input, sound comes out of its audio output, effects take audio in, a few dials drive plugin parameters, a button opens the plugin's own editor, and the plugin's state is saved with the song. The website shows these modules as placeholders.
 
@@ -207,7 +207,7 @@ The exact *D* for each engine mode is measured in stage 0.
 **Found while testing:**
 
 - **mda's sample synths drop some note-ons.** The SDK's mda synths (DX10, JX10, Piano) ignore a note-on whose sample offset is a non-zero multiple of 16. Their sample-accurate base class hands such an event to the synth at the very end of a 16-sample slice, where it is skipped. This is a bug in the SDK samples, not in the host; real plugins don't share that code. In ORY-1 it means roughly one in 16 notes is lost on the mda test synths.
-- **Massive X is silent.** The editor (stage 4) should show why: for example, it may be unauthorised or still loading content, or it may need something from the host that ORY-1 doesn't provide yet. It is still open.
+- **Massive X seemed silent.** Its editor (stage 4) showed why: the first time it runs in a new host, it spends a minute or two scanning its wavetable content before loading a preset. Afterwards it plays (see stage 4).
 
 ### Stage 2: robustness (done)
 
@@ -274,6 +274,31 @@ The defaults leave a margin of about two blocks; heavier plugins or a busier com
 
 **Not tested yet:** editor edits moving a dial, and Learn. Both need the plugin's editor (stage 4).
 
+### Stage 4: editor windows (done)
+
+**Opening an editor:** ⧉ inside a VST3 module, next to ≡, opens the plugin's own editor.
+- The helper creates a window titled *Plugin · ORY-1*, owned by ORY-1's window, so it stays above ORY-1 and minimises with it.
+- The window is sized to what the plugin asks for, and resizable when the plugin allows (`checkSizeConstraint`, `onSize`, `IPlugFrame::resizeView`).
+- The helper runs per-monitor DPI aware and gives each editor its scale (`IPlugViewContentScaleSupport`), so editors are sharp at 125 %.
+- Tapping ⧉ again brings an open editor forward. A plugin without an editor of its own (like the SDK's mda plugins, built here without VSTGUI) shows a message.
+
+**Closing it:** the window's close button closes the editor. Its position is kept with the song, as the restored position even if it closed while minimised, and it reopens there if that spot is still on a screen; otherwise it opens centred over ORY-1. Unloading a plugin closes its editor first, as VST3 requires.
+
+**A fix in the helper:** commands now go to a hidden message window instead of the helper's thread queue. Windows drops thread messages while a window is being dragged or resized, so moving an editor could have lost commands.
+
+**Tested in the app:**
+- **Replika XT** opened at its full size (1363 × 591 at 125 %) and showed ORY-1's tempo (120 BPM) from the transport events.
+- **Editor to dial:** moving its Mix knob moved the ORY-1 dial on Mix, from 0.255 to 0.470.
+- **Learn:** with Learn on, moving Mix put it on the chosen dial, then Learn switched itself off. At first it put Mix on every dial in turn, because a drag sends a stream of edits; that was fixed.
+- **Position:** an editor closed at (300, 150) reopened there.
+- **Massive X** opened, showed *Updating content… Scanning…* for over a minute, then loaded the *Agonic Drone* preset and played (peak about 0.05).
+  - While Massive X scanned (using 1.6 GB), its module got 5 late blocks in about 3 minutes (62,700 blocks).
+- These editor tests used mouse messages posted to the editor window, not the real mouse, and captured only the helper's own windows.
+
+**Limits:**
+- **Presets and settings chosen in an editor aren't kept yet.** Saving the plugin's state with the song is stage 5. Until then, only the eight dials are saved.
+- **Editor position on some screens:** it is saved in work-area coordinates. With the taskbar at the top or left of the screen, an editor may reopen offset by the taskbar's size.
+
 ### Developing
 
 ```bash
@@ -287,6 +312,5 @@ node native/test-host.js "<path.vst3>" <class id> [seconds]   # play notes throu
 
 ### Next
 
-- **Stage 4:** editor windows, testing editor edits moving dials and Learn, then looking into the silent Massive X.
 - **Stage 5:** saving and loading plugin state.
 - **Stage 6:** packaging and installer testing.
