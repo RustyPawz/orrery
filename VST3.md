@@ -335,7 +335,7 @@ The defaults leave a margin of about two blocks; heavier plugins or a busier com
 - **The packaged app,** run from `win-unpacked` with a separate test profile:
   - it found the helper and bridge in `resources\native` and listed the VST3 plugins in the Rack;
   - it played the Replika XT test song, restoring both plugins' saved states, with 1 late block in about 8,500.
-- **Installed on Windows 11** over 0.9.0-beta.1, after backing up `%APPDATA%\Orrery\Local Storage` and `Documents\ORY-1\library.json` (12 songs) to `%USERPROFILE%\ORY-1 backupsefore-vst3-2026-10-27_1906`.
+- **Installed on Windows 11** over 0.9.0-beta.1, after backing up `%APPDATA%\Orrery\Local Storage` and `Documents\ORY-1\library.json` (12 songs) to `%USERPROFILE%\ORY-1 backups\before-vst3-2026-10-27_1906`.
   - The installer's wizard put it in `%LOCALAPPDATA%\Programs\Orrery\ORY-1`, a subfolder of the old install's folder, and removed the old files.
   - On first start, the installed app scanned all 15 plugin bundles and kept all 12 songs.
   - Playing a VST3 module in the installed app was left for the person to try, so that none of their songs were changed.
