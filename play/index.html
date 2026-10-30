@@ -2006,6 +2006,9 @@ function flashOf(n,t){let f=0;for(const ft of n.fires){const d=t-ft;if(d>=0&&d<.
 let meter=0;
 // a background picture, chosen in Settings and kept in this browser's storage (it can be large, so it isn't in settings)
 let bgImg=null;
+// a module body's shading, made once per size around (0,0) and drawn with the module moved there
+const bodyGrads=new Map();
+function bodyGrad(R){let bg=bodyGrads.get(R);if(!bg){bg=g.createRadialGradient(0,0,R*.2,0,0,R);bg.addColorStop(0,'#1c1236');bg.addColorStop(1,'#110a20');bodyGrads.set(R,bg)}return bg}
 function showBg(blob){if(!blob){bgImg=null;return}const im=new Image();im.onload=()=>{bgImg=im};im.src=URL.createObjectURL(blob)}
 function drawBG(t){
   g.fillStyle='#0a0614';g.fillRect(0,0,W,H);
@@ -2013,8 +2016,9 @@ function drawBG(t){
     if(setv.bgDim){g.fillStyle=`rgba(10,6,20,${setv.bgDim})`;g.fillRect(0,0,W,H)}}
   const cx=W/2,cy=H/2,R=Math.min(W,H)*.47;
   if(setv.backdrop){
+    // filled only as far as the gradient reaches (beyond it, it's transparent)
     const rg=g.createRadialGradient(cx,cy,R*.1,cx,cy,R*1.25);rg.addColorStop(0,`rgba(${40+meter*40},20,${70+meter*30},.55)`);rg.addColorStop(1,'rgba(10,6,20,0)');
-    g.fillStyle=rg;g.fillRect(0,0,W,H);
+    g.fillStyle=rg;g.fillRect(Math.max(0,cx-R*1.25),Math.max(0,cy-R*1.25),Math.min(W,R*2.5),Math.min(H,R*2.5));
     g.strokeStyle=`rgba(150,120,230,${.1+meter*.25})`;g.lineWidth=1;g.beginPath();g.arc(cx,cy,R,0,TAU);g.stroke();
   }
   if(setv.grid){g.strokeStyle='rgba(120,90,200,.07)';g.lineWidth=1;
@@ -2026,12 +2030,16 @@ function drawBG(t){
     g.fillStyle=alpha(nt.c,.15);g.fillRect(x,y-3,w,6);g.fillStyle=alpha(nt.c,.35);g.fillRect(x,y-3,2,6)}
   g.fillStyle='rgba(201,242,122,.22)';g.fillRect(W-40,H*.08,1,H*.8);
 }
+// each arc is its own path on purpose: the canvas draws a lone arc fast, but a path of several (or one begun with
+// moveTo) takes a much slower route on integrated graphics
 function arcVal(x,y,r,frac,col,lw,bi){
   const s=.75*Math.PI,span=1.5*Math.PI;g.lineCap='round';g.lineWidth=lw;
   g.strokeStyle='rgba(160,140,220,.16)';g.beginPath();g.arc(x,y,r,s,s+span);g.stroke();
   if(bi){const m=s+span/2,e=s+span*Math.min(1,frac);g.strokeStyle=col;g.beginPath();if(Math.abs(e-m)<.04)g.arc(x,y,r,m-.03,m+.03);else g.arc(x,y,r,Math.min(m,e),Math.max(m,e));g.stroke();return}
   if(frac>.002){g.strokeStyle=col;g.beginPath();g.arc(x,y,r,s,s+span*Math.min(1,frac));g.stroke()}
 }
+// text smaller than this many pixels on screen is skipped: unreadable, and each one is a separate draw
+let ZS=1;const legible=(px,min=4)=>px*ZS>=min;
 const MIDI_Y='#ffd25a';
 function midiMark(n,k,x,y,r,t){
   const armed=midiArm&&midiArm.node===n.id&&midiArm.key===k;
@@ -2117,7 +2125,7 @@ function glyph(n,c,f,t,kind){
 function drawNode(n,t,hv,dragKind){
   const T=TYPES[n.type],c=colorOf(n),f=flashOf(n,t),{x,y}=n,R=T.r;
   n.ui.o+=((sel===n||n.ui.f?1:0)-n.ui.o)*.2;
-  const SZ=n.sz||1;g.save();g.translate(x,y);g.scale(SZ,SZ);g.translate(-x,-y);LOCAL=true;
+  const SZ=n.sz||1;g.save();g.translate(x,y);g.scale(SZ,SZ);g.translate(-x,-y);LOCAL=true;ZS=view.s*SZ;
   // satellites (bloom when selected)
   const o=n.ui.o;
   if(o>.03)T.satKeys.forEach((k,j)=>{
@@ -2125,15 +2133,14 @@ function drawNode(n,t,hv,dragKind){
     g.globalAlpha=o;g.strokeStyle=alpha(c,.25);g.lineWidth=1;g.beginPath();g.moveTo(x+(sx-x)*R/Math.hypot(sx-x,sy-y),y+(sy-y)*R/Math.hypot(sx-x,sy-y));g.lineTo(sx,sy);g.stroke();
     g.fillStyle='#120a22';g.beginPath();g.arc(sx,sy,12*o,0,TAU);g.fill();
     arcVal(sx,sy,8*o,fracOf(n,pd),alpha(c,active?1:.85),active?4:3,pd.bi);modDot(n,k,sx,sy,8*o,t);midiMark(n,k,sx,sy,8*o,t);
-    g.font='8px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=alpha(c,.75);g.fillText(dialShort(n,k),sx,sy+22);
+    if(legible(8)){g.font='8px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=alpha(c,.75);g.fillText(dialShort(n,k),sx,sy+22)}
     g.globalAlpha=1;
   });
   else if(T.satKeys.length){g.fillStyle=alpha(c,.45);T.satA.forEach(a=>{g.beginPath();g.arc(x+Math.cos(a)*(R+7),y+Math.sin(a)*(R+7),1.6,0,TAU);g.fill()})}
   // body: a circle, or a rounded box for free-form modules; plugins can skip it and draw their own
   const B=T.box,outline=pad=>{g.beginPath();if(B)g.roundRect(x-B.w/2-pad,y-B.h/2-pad,B.w+pad*2,B.h+pad*2,10+pad);else g.arc(x,y,R+pad,0,TAU)};
   if(T.drawBody!==false){
-    const bg=g.createRadialGradient(x,y,R*.2,x,y,R);bg.addColorStop(0,'#1c1236');bg.addColorStop(1,'#110a20');
-    g.fillStyle=bg;outline(0);g.fill();
+    g.save();g.translate(x,y);g.fillStyle=bodyGrad(R);g.beginPath();if(B)g.roundRect(-B.w/2,-B.h/2,B.w,B.h,10);else g.arc(0,0,R,0,TAU);g.fill();g.restore();
     if(f>0){g.save();g.shadowColor=c;g.shadowBlur=glowB(22*f)}
     g.strokeStyle=alpha(c,.55+f*.45);g.lineWidth=2+f*1.5;if(n.type==='missing')g.setLineDash([4,5]);outline(0);g.stroke();g.setLineDash([]);
     if(f>0)g.restore();
@@ -2150,10 +2157,10 @@ function drawNode(n,t,hv,dragKind){
   if(n.type==='growth')drawGrowth(n,t,c);
   if(n.type==='cloud')drawCloud(n,t,c);
   if(T.btns)T.btns(n).forEach(b=>{const bx=x+b.dx,by=y+b.dy,on=b.on,bc=b.col||c;g.fillStyle=on?bc:'#120a22';g.strokeStyle=alpha(on?bc:c,b.dim?.3:.6);g.lineWidth=1.3;
-    g.beginPath();g.arc(bx,by,b.r,0,TAU);g.fill();g.stroke();g.fillStyle=on?'#120a22':alpha(c,b.dim?.4:.85);g.font=`500 ${b.l.length>1?8:10}px "IBM Plex Mono",monospace`;g.textAlign='center';g.fillText(b.l,bx,by+3.5)});
+    g.beginPath();g.arc(bx,by,b.r,0,TAU);g.fill();g.stroke();if(legible(9)){g.fillStyle=on?'#120a22':alpha(c,b.dim?.4:.85);g.font=`500 ${b.l.length>1?8:10}px "IBM Plex Mono",monospace`;g.textAlign='center';g.fillText(b.l,bx,by+3.5)}});
   if(n.type==='output'){const lv=n.st.lvl||0,gate=chanGate(n);g.strokeStyle=alpha(gate?c:'#ff5a78',.15+lv*.85*gate);g.lineWidth=1.5+lv*5*gate;g.beginPath();g.arc(x,y,R-24,0,TAU);g.stroke();
     MS_BTNS.forEach(([k,lbl,col,dx])=>{const on=n.p[k],bx=x+dx,by=y+R+17;midiMark(n,k,bx,by,11,t);g.fillStyle=on?col:'#120a22';g.strokeStyle=on?col:alpha(c,.5);g.lineWidth=1.3;g.beginPath();g.arc(bx,by,9,0,TAU);g.fill();g.stroke();
-      g.fillStyle=on?'#120a22':alpha(c,.8);g.font='500 10px "IBM Plex Mono",monospace';g.textAlign='center';g.fillText(lbl,bx,by+3.5)})}
+      if(legible(10)){g.fillStyle=on?'#120a22':alpha(c,.8);g.font='500 10px "IBM Plex Mono",monospace';g.textAlign='center';g.fillText(lbl,bx,by+3.5)}})}
   if(n.type==='chord'&&n.st.hit!=null){/* glyph flash handled */}
   glyph(n,c,f,t,T.glyph);
   if(T.draw){g.save();g.translate(x,y);plugCall(T,'draw',()=>T.draw(g,n,t,f));g.restore()}// plugin drawing, centred on the module
@@ -2164,12 +2171,12 @@ function drawNode(n,t,hv,dragKind){
     else if(p.kind===CV){g.fillStyle=p.out?c:'#0a0614';g.beginPath();g.moveTo(q.x,q.y-6.5);g.lineTo(q.x+6.5,q.y);g.lineTo(q.x,q.y+6.5);g.lineTo(q.x-6.5,q.y);g.closePath();g.fill();g.stroke()}
     else{g.fillStyle=p.out?c:'#0a0614';g.beginPath();g.arc(q.x,q.y,5.5,0,TAU);g.fill();g.stroke()}
     if(dragKind&&!p.out&&p.kind===dragKind.kindOfPort&&n!==dragKind.from){g.strokeStyle=alpha(c,.5+.5*Math.sin(t*8));g.beginPath();g.arc(q.x,q.y,10,0,TAU);g.stroke()}
-    if(p.tag){g.fillStyle=alpha(c,.8);g.font='9px "IBM Plex Mono",monospace';g.textAlign=q.nx<-.2?'right':'left';g.fillText(p.tag,q.x+q.nx*10+(q.nx>=-.2?3:-3),q.y+q.ny*10+3)}
+    if(p.tag&&legible(9)){g.fillStyle=alpha(c,.8);g.font='9px "IBM Plex Mono",monospace';g.textAlign=q.nx<-.2?'right':'left';g.fillText(p.tag,q.x+q.nx*10+(q.nx>=-.2?3:-3),q.y+q.ny*10+3)}
   }
   // labels
   g.font='10px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=sel===n?c:'rgba(200,190,240,.62)';
   const top=B?B.h/2:R,label=titleOf(n).toUpperCase(),yl=y-top-12-(o>.03&&T.satKeys.length?26*o+14:0);
-  g.fillText(label.length>24?label.slice(0,23)+'…':label,x,yl);
+  if(legible(10,2.5)||sel===n)g.fillText(label.length>24?label.slice(0,23)+'…':label,x,yl);
   if(hv&&hv.n===n&&hv.k){const pd=T.pd[hv.k];g.fillStyle=c;g.fillText(`${dialLabel(n,hv.k)} ${pd.fmt(n.p[hv.k],n)}`,x,y+top+(o>.03&&T.satKeys.length?26*o+40:n.type==='output'?44:20))}
   const rz=(drag&&drag.kind==='resize'&&drag.n===n)||(!drag&&hover&&hover.kind==='resize'&&hover.n===n);
   if(rz){g.strokeStyle='rgba(255,255,255,.7)';g.lineWidth=3;g.setLineDash([2,4]);g.beginPath();g.arc(x,y,R,0,TAU);g.stroke();g.setLineDash([]);
@@ -2203,7 +2210,8 @@ function drawGrowth(n,t,c){const v=n.st.vine,R=34;if(!v)return;g.lineCap='round'
   g.fillStyle=c;for(const tp of v.tips){g.beginPath();g.arc(n.x+tp.x*R,n.y+tp.y*R,2.2,0,TAU);g.fill()}}
 function drawCloud(n,t,c){const S=SAMPLES[n.sid],r0=TYPES.cloud.r-13;
   if(!S){g.strokeStyle=alpha(c,.35);g.setLineDash([2,4]);g.beginPath();g.arc(n.x,n.y,r0+4,0,TAU);g.stroke();g.setLineDash([]);return}
-  const N=S.peaks.length;for(let i=0;i<N;i++){const a=-Math.PI/2+i/N*TAU,hh=1.5+S.peaks[i]*8;g.strokeStyle=alpha(c,.3);g.lineWidth=1.4;g.beginPath();g.moveTo(n.x+Math.cos(a)*r0,n.y+Math.sin(a)*r0);g.lineTo(n.x+Math.cos(a)*(r0+hh),n.y+Math.sin(a)*(r0+hh));g.stroke()}
+  const N=S.peaks.length;g.strokeStyle=alpha(c,.3);g.lineWidth=1.4;g.beginPath();
+  for(let i=0;i<N;i++){const a=-Math.PI/2+i/N*TAU,hh=1.5+S.peaks[i]*8;g.moveTo(n.x+Math.cos(a)*r0,n.y+Math.sin(a)*r0);g.lineTo(n.x+Math.cos(a)*(r0+hh),n.y+Math.sin(a)*(r0+hh))}g.stroke();
   for(const gr of n.st.gr||[]){const u=(t-gr.t)/Math.max(.05,gr.sz);if(u<0||u>1)continue;const a=-Math.PI/2+gr.pos*TAU;g.fillStyle=alpha('#ffffff',Math.sin(u*Math.PI));g.beginPath();g.arc(n.x+Math.cos(a)*(r0+5),n.y+Math.sin(a)*(r0+5),2.4,0,TAU);g.fill()}}
 // one dot per note of the key: the tones Snap lets through are lit, the last note it played is white
 function drawSnap(n,t,c){
@@ -2215,11 +2223,15 @@ function drawSampler(n,t,c){
   const S=SAMPLES[n.sid],R=TYPES.sampler.r,r0=R-13;
   if(!S){g.strokeStyle=alpha(c,.35);g.setLineDash([2,4]);g.beginPath();g.arc(n.x,n.y,r0+4,0,TAU);g.stroke();g.setLineDash([]);return}
   const N=S.peaks.length,a0=n.p.start,a1=n.p.start+n.p.len*(1-n.p.start);
-  for(let i=0;i<N;i++){const fr=i/N,a=-Math.PI/2+fr*TAU,h=1.5+S.peaks[i]*10,inR=fr>=a0&&fr<=a1;
-    g.strokeStyle=alpha(c,inR?.85:.22);g.lineWidth=1.6;g.beginPath();g.moveTo(n.x+Math.cos(a)*r0,n.y+Math.sin(a)*r0);g.lineTo(n.x+Math.cos(a)*(r0+h),n.y+Math.sin(a)*(r0+h));g.stroke()}
+  // the waveform as two paths (inside and outside the played range): one stroke per tick is thousands of draws in a big patch
+  g.lineWidth=1.6;
+  for(const inside of[false,true]){g.beginPath();
+    for(let i=0;i<N;i++){const fr=i/N;if((fr>=a0&&fr<=a1)!==inside)continue;const a=-Math.PI/2+fr*TAU,h=1.5+S.peaks[i]*10,cs=Math.cos(a),sn=Math.sin(a);
+      g.moveTo(n.x+cs*r0,n.y+sn*r0);g.lineTo(n.x+cs*(r0+h),n.y+sn*(r0+h))}
+    g.strokeStyle=alpha(c,inside?.85:.22);g.stroke()}
   if(n.st.plays)for(const pl of n.st.plays){const u=(t-pl.t)/pl.play;if(u<0||u>1)continue;const fr=pl.a0+(pl.a1-pl.a0)*u,a=-Math.PI/2+fr*TAU;
     g.strokeStyle='#ffffff';g.lineWidth=2;g.beginPath();g.moveTo(n.x+Math.cos(a)*(r0-3),n.y+Math.sin(a)*(r0-3));g.lineTo(n.x+Math.cos(a)*(r0+13),n.y+Math.sin(a)*(r0+13));g.stroke()}
-  g.font='8px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=alpha(c,.8);g.fillText(SAMPLER_MODES[n.p.mode].toUpperCase(),n.x,n.y+4);
+  if(legible(8)){g.font='8px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=alpha(c,.8);g.fillText(SAMPLER_MODES[n.p.mode].toUpperCase(),n.x,n.y+4)}
 }
 function drawSections(t){
   for(const S of sections){const c=SEC_COLORS[S.c%SEC_COLORS.length],on=S===secSel,rimHot=(hover&&hover.s===S&&hover.kind==='secRim')||(drag&&drag.s===S&&drag.kind==='secSize');
@@ -2241,11 +2253,14 @@ function drawSections(t){
 }
 function drawWire(w,hv,t){
   const b=bez(w);if(!b)return;const A=byId(w.a),B=byId(w.b),ca=colorOf(A),hot=hv&&hv.w===w;
-  const gr=g.createLinearGradient(b[0],b[1],b[6],b[7]);gr.addColorStop(0,alpha(ca,.6));gr.addColorStop(1,alpha(colorOf(B),.6));
+  // zoomed far out, a wire is a plain line in its source's colour: dashes and a gradient per wire are costly to draw
+  // and too small to see there
+  const far=view.s<.55,dash=d=>{if(!far)g.setLineDash(d)};
+  let gr;if(far)gr=alpha(ca,.6);else{gr=g.createLinearGradient(b[0],b[1],b[6],b[7]);gr.addColorStop(0,alpha(ca,.6));gr.addColorStop(1,alpha(colorOf(B),.6))}
   g.lineCap='round';
   if(w.k===CV){
     const v=Math.min(1,Math.abs(srcVal(A,w.ao,t)));
-    g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.25+v*.6);g.lineWidth=1.4+v*1.6;g.setLineDash([2,5]);g.lineDashOffset=-dashT(t)*20;
+    g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.25+v*.6);g.lineWidth=1.4+v*1.6;dash([2,5]);g.lineDashOffset=-dashT(t)*20;
     g.beginPath();g.moveTo(b[0],b[1]);g.bezierCurveTo(b[2],b[3],b[4],b[5],b[6],b[7]);g.stroke();g.setLineDash([]);
     const[mx,my]=bAt(b,.5),act=(drag&&drag.kind==='depth'&&drag.w===w)||(hover&&hover.kind==='depth'&&hover.w===w);
     g.fillStyle='#120a22';g.beginPath();g.arc(mx,my,8,0,TAU);g.fill();g.strokeStyle=alpha(ca,.35);g.lineWidth=1;g.stroke();
@@ -2255,13 +2270,13 @@ function drawWire(w,hv,t){
   }
   if(w.k===AU){
     g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.18);g.lineWidth=7;g.beginPath();g.moveTo(b[0],b[1]);g.bezierCurveTo(b[2],b[3],b[4],b[5],b[6],b[7]);g.stroke();
-    g.strokeStyle=hot?'rgba(255,120,140,.9)':gr;g.lineWidth=2.4;g.setLineDash([7,6]);g.lineDashOffset=-dashT(t)*40;
+    g.strokeStyle=hot?'rgba(255,120,140,.9)':gr;g.lineWidth=2.4;dash([7,6]);g.lineDashOffset=-dashT(t)*40;
     g.beginPath();g.moveTo(b[0],b[1]);g.bezierCurveTo(b[2],b[3],b[4],b[5],b[6],b[7]);g.stroke();g.setLineDash([]);
   }else if(A.type==='switcher'&&w.ao==='out'){
     // ghost wires: faint and dashed until the switcher makes one live
     const gw=ghostWires(A),i=gw.indexOf(w),live=i===swAt(A,t)%gw.length,f=flashOf(A,t);
     if(live){g.save();g.shadowColor=ca;g.shadowBlur=glowB(10+f*14);g.strokeStyle=hot?'rgba(255,120,140,.9)':gr;g.lineWidth=hot?3.2:2.6}
-    else{g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.2);g.lineWidth=hot?2.4:1.4;g.setLineDash([2,7]);g.lineDashOffset=-dashT(t)*6}
+    else{g.strokeStyle=hot?'rgba(255,120,140,.9)':alpha(ca,.2);g.lineWidth=hot?2.4:1.4;dash([2,7]);g.lineDashOffset=-dashT(t)*6}
     g.beginPath();g.moveTo(b[0],b[1]);g.bezierCurveTo(b[2],b[3],b[4],b[5],b[6],b[7]);g.stroke();g.setLineDash([]);if(live)g.restore();
     const[gx,gy]=bAt(b,.8);g.fillStyle=live?ca:'#120a22';g.strokeStyle=alpha(ca,live?1:.4);g.lineWidth=1.2;g.beginPath();g.arc(gx,gy,6.5,0,TAU);g.fill();g.stroke();
     g.font='500 8px "IBM Plex Mono",monospace';g.textAlign='center';g.fillStyle=live?'#120a22':alpha(ca,.6);g.fillText(String(i+1),gx,gy+3);
@@ -2295,12 +2310,16 @@ function frame(){
   const hv=drag&&drag.kind==='ring'?{n:drag.n,k:drag.k}:(hover&&(hover.kind==='ring'||hover.kind==='wire')?hover:null);
   midiKeys=new Set(midiMap.filter(m=>m.tgt.k!=='play').map(m=>m.tgt.node+':'+m.tgt.key));
   drawSections(t);
-  for(const w of wires)if(w.k!==CV)drawWire(w,hv,t);
+  // only what's on screen is drawn: the visible part of the world, with a margin for blooming dials and labels
+  const[vx0,vy0]=toW(0,0),[vx1,vy1]=toW(W,H);
+  const seen=n=>{const T=TYPES[n.type],e=((T.box?Math.max(T.box.w,T.box.h)/2:T.r)+90)*(n.sz||1);return n.x+e>vx0&&n.x-e<vx1&&n.y+e>vy0&&n.y-e<vy1};
+  const wSeen=w=>{const b=bez(w);if(!b)return false;const xs=[b[0],b[2],b[4],b[6]],ys=[b[1],b[3],b[5],b[7]];return Math.max(...xs)+20>vx0&&Math.min(...xs)-20<vx1&&Math.max(...ys)+20>vy0&&Math.min(...ys)-20<vy1};
+  for(const w of wires)if(w.k!==CV&&wSeen(w))drawWire(w,hv,t);
   drawPulses(t);
   const dk=drag&&drag.kind==='wire'?drag:null;
-  for(const n of nodes)drawNode(n,t,hv,dk);
+  for(const n of nodes)if(seen(n)||sel===n)drawNode(n,t,hv,dk);
   syncPanels();
-  for(const w of wires)if(w.k===CV)drawWire(w,hv,t);
+  for(const w of wires)if(w.k===CV&&wSeen(w))drawWire(w,hv,t);
   if(dk){const p=portPos(dk.from,dk.port,true),c=colorOf(dk.from);
     g.strokeStyle=alpha(c,.85);g.setLineDash([5,5]);g.lineWidth=2;g.beginPath();g.moveTo(p.x,p.y);g.bezierCurveTo(p.x+p.nx*80,p.y+p.ny*80,dk.x-60,dk.y,dk.x,dk.y);g.stroke();g.setLineDash([])}
   g.setTransform(dpr,0,0,dpr,0,0);
