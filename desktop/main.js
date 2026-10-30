@@ -151,14 +151,32 @@ function listPlugins() {
 // damaged (a crash in the middle of a save can leave it opening empty), the page restores the songs from this file.
 // Writes wait a second for edits to settle, go to a temporary file first, and the first write of each session keeps
 // the file it replaces as library.previous.json.
+// A song never leaves the file without a copy: any song in it that a write would drop (one deleted in ORY-1, or one a
+// copy of ORY-1 with an older or damaged song store never had) is kept in library.removed.json first, with when it went.
 const libraryFile = () => path.join(docsDir, 'library.json');
 let libraryText = null, libraryTimer = null, libraryRotated = false;
+function keepRemovedSongs(oldText, newText) {
+  let before, after;
+  try { before = JSON.parse(oldText).songs || {}; after = JSON.parse(newText).songs || {}; } catch (e) { return; }
+  const gone = Object.keys(before).filter(id => !after[id]);
+  if (!gone.length) return;
+  const file = path.join(docsDir, 'library.removed.json');
+  let kept = {};
+  try { kept = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { /* the first one */ }
+  const when = new Date().toISOString();
+  for (const id of gone) kept[id] = { ...before[id], removed: when };
+  fs.writeFileSync(file + '.tmp', JSON.stringify(kept));
+  fs.renameSync(file + '.tmp', file);
+}
 function writeLibrary() {
   clearTimeout(libraryTimer); libraryTimer = null;
   if (libraryText === null) return;
   const file = libraryFile(), tmp = file + '.tmp';
   try {
-    if (!libraryRotated && fs.existsSync(file)) fs.copyFileSync(file, path.join(docsDir, 'library.previous.json'));
+    if (fs.existsSync(file)) {
+      if (!libraryRotated) fs.copyFileSync(file, path.join(docsDir, 'library.previous.json'));
+      keepRemovedSongs(fs.readFileSync(file, 'utf8'), libraryText);
+    }
     libraryRotated = true;
     fs.writeFileSync(tmp, libraryText);
     fs.renameSync(tmp, file);
