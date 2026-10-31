@@ -1130,7 +1130,7 @@ Object.assign(TYPES,{
         inp.style.cssText='width:70px;box-sizing:border-box;background:transparent;border:0;color:#ff9ad5;font:10px "IBM Plex Mono",monospace;text-align:center;outline:none';
         inp.oninput=()=>{n.data.labels[i]=inp.value;save()};el.append(inp)})}}},
 
-  visual:{name:'Visualizer',cat:'Out',color:'#7ab8ff',r:160,glyph:'none',box:{w:320,h:200},
+  visual:{name:'Visualizer',cat:'Out',color:'#7ab8ff',r:160,glyph:'none',box:{w:320,h:200},tap:1,
     ins:[{id:'in',kind:AU}],outs:[{id:'out',kind:AU}],
     params:[P('mode','look',0,VIS_MODES.length-1,0,1,L(VIS_MODES)),P('gain','sensitivity',.2,4,1.5,.01,v=>'×'+v.toFixed(1)),P('hue','warmth',0,1,.35,.01,pct)],
     build:n=>{const inp=G(1),out=G(1),an=ctx.createAnalyser();an.fftSize=1024;an.smoothingTimeConstant=.82;inp.connect(an);inp.connect(out);
@@ -1498,7 +1498,10 @@ function rewire(){
     w.gs=f.scale;w.g=G(w.depth*f.scale);((A.au.sigs&&A.au.sigs[w.ao])||A.au.sig).connect(w.g);w.g.connect(f.to(B));}
   for(const n of nodes)if(n.au&&n.au.out)try{n.au.out.disconnect()}catch(e){}
   for(const w of wires){if(w.k!==AU)continue;const A=byId(w.a),B=byId(w.b);if(A&&B&&A.au&&A.au.out&&B.au&&B.au.inp)A.au.out.connect(B.au.inp)}
-  for(const n of nodes)if(n.au&&n.au.out&&!wires.some(w=>w.k===AU&&w.a===n.id))n.au.out.connect(directBus);
+  // audio wired nowhere goes to the speakers. A listener (the Visualizer) with nothing wired from it only listens:
+  // it stays silent, and a wire into it doesn't count, so what it shows is still heard exactly once
+  const auOut=id=>wires.some(w=>w.k===AU&&w.a===id),listening=id=>{const B=byId(id);return!!(B&&TYPES[B.type].tap&&!auOut(id))};
+  for(const n of nodes)if(n.au&&n.au.out&&!listening(n.id)&&!wires.some(w=>w.k===AU&&w.a===n.id&&!listening(w.b)))n.au.out.connect(directBus);
   applyMix();
 }
 function removeNode(n){killAu(n);wires=wires.filter(w=>w.a!==n.id&&w.b!==n.id);orphanWires=orphanWires.filter(w=>w.a!==n.id&&w.b!==n.id);nodes=nodes.filter(x=>x!==n);if(sel===n)sel=null;rewire()}

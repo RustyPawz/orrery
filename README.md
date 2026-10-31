@@ -30,7 +30,7 @@ It's a companion to the [RedtailWorks FM-1 firmwares](https://rustypawz.github.i
 - **Processors:** audio modules you play with events. Ducker (sidechain pump on a trigger, with a pump output for any dial), Stutter (beat repeat), Low-pass Gate, Looper (a tape loop that fades a little each pass; R records, C clears) and Resonator (four combs tuned to chord tones of the key).
 - **Mod:** LFO (free, or synced from 1/16 up to 64 bars), Envelope, Random, Macro, an audio Follower, Function (rise and fall, one-shot or cycling, with end-of-rise and end-of-cycle pulses), S&H, Slew, Comparator (fires an event when any modulation crosses a threshold) and CV Mix (sum, multiply, max, min or difference). Drag a ◆ output onto any dial of any module. Every instrument also has its own envelope output, so a kick can open a bass filter or duck a pad.
 - **Arrange:** Phrase (pulses every bar, 4, 8 and 16 bars), Riser (a noise sweep and accelerating snare roll over 1–8 bars, then a drop pulse) and Scenes (stores up to four versions of the whole patch and morphs between them).
-- **Mixer:** as many Speakers channel strips as you like, each with level, pan, mute and solo, and a Visualizer (neon skyline, spectrum, scope or rain) you can put on any sound.
+- **Mixer:** as many Speakers channel strips as you like, each with level, pan, mute and solo, and a Visualizer (neon skyline, spectrum, scope or rain) you can put on any sound. It only listens unless you wire its output on, so a sound wired into it is still heard once.
 - **MIDI:** map any dial, mute, solo or Play to a knob, fader or key on your controller with MIDI learn, and play the patch from a keyboard through a MIDI In module. Control Rack is a strip of eight labelled knobs for performing: wire each one's ◆ output to any dial, and map the knobs to your controller (turn on MIDI learn, click a knob, move a control).
 
 ## Demos
@@ -45,7 +45,7 @@ Patches are saved as songs in your browser, as many as you like, and you swap be
 
 - Tap a module to bloom its extra dials, drag rings up and down to change them, scroll over a dial for fine steps.
 - Wire ● outputs to ○ inputs for events, ■ to □ for audio, ◆ onto any dial for modulation. Drag a mod wire's knob to set its depth; below zero inverts it.
-- Audio you don't wire anywhere goes straight to the speakers.
+- Audio you don't wire anywhere goes straight to the speakers. A wire into a Visualizer doesn't count, unless the Visualizer's own output is wired on.
 - A Switcher's wires are ghosts until one goes live. Feed it a clock on **in**, pulses on **step** to move to the next wire (or set **auto step** to move every N events), and **rst** to go back to wire 1. For example, run a clock through a Switcher into two Ring Seqs that both play one synth, and step it from a slow clock output to hand the voice back and forth.
 - Notes can carry a length. Put a Gate after any note source, or turn up a Ring Seq's gate dial. Synth, Drone, Acid and Low-pass Gate then hold each note for its length instead of just hitting it.
 - Modulation can trigger events: wire an LFO, Random or Follower onto a Comparator's input dial and use its up and down pulses.
